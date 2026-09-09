@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.pyc
+*.pt
+.idea/
+.vscode/
+
+# datasets
+datasets/
+
+# secrets
+.env
