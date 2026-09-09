@@ -1,7 +1,10 @@
 from ultralytics import YOLO
 import cv2
 
-model = YOLO("yolov8n.pt")
+# 헬멧 검출 모델(스모크 테스트 학습분). 범용 테스트로 되돌리려면 "yolov8n.pt"
+MODEL_PATH = "runs/detect/runs/helmet_smoke/weights/best.pt"
+
+model = YOLO(MODEL_PATH)
 
 cap = cv2.VideoCapture(0)
 
