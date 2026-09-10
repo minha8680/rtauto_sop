@@ -13,3 +13,7 @@ runs/
 
 # secrets
 .env
+
+# 사내 문서 (public 저장소이므로 제외)
+*.docx
+*.pdf
