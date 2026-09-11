@@ -1,7 +1,8 @@
-"""events.jsonl(webcam_sop.py가 남긴 위반 확정/해제 이력)을 사람이 읽기 쉽게 보여준다.
+"""events.jsonl(webcam_sop.py가 남긴 위반 확정/해제/클립저장 이력)을 사람이 읽기 쉽게 보여준다.
 
 JSON Lines를 한 줄씩 직접 읽어도 되지만, confirmed/resolved를 짝지어서
-"몇 초간 지속됐는지"까지 계산해서 보여주는 게 이 스크립트의 역할.
+"몇 초간 지속됐는지"까지 계산해서 보여주는 게 이 스크립트의 역할. clip_saved(경보 구간
+클립 저장 완료, --no-clip 아니면 confirmed마다 하나씩 생김)는 파일 경로를 그대로 보여준다.
 
 사용:
     python view_events.py              # 전체 이력
@@ -17,7 +18,7 @@ from datetime import datetime
 
 EVENTS_LOG_PATH = "events.jsonl"
 
-KIND_LABEL = {"confirmed": "확정", "resolved": "해제"}
+KIND_LABEL = {"confirmed": "확정", "resolved": "해제", "clip_saved": "클립"}
 
 
 def load_events(path):

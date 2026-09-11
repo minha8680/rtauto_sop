@@ -42,10 +42,16 @@ push_server.py(Web Push 프로토타입)를 같이 띄워두면 --push-url 로 �
 공통 지점을 통해서만 기록·발송하므로, 나중에 새 규칙(위험 자세 등)이 추가돼도 이 두 함수를
 그대로 호출하면 되고 로그·알림 코드를 다시 건드릴 필요가 없다. 기록된 이벤트는
 view_events.py 로 사람이 읽기 쉽게 요약해서 볼 수 있다.
+
+위반이 확정되는 순간, 그 시점까지의 최근 --clip-sec(기본 10초) 프레임을 clips/ 에 mp4로
+저장한다(기획안 그림3/4 "경보 구간 클립(10초)" 대응). --no-clip 으로 끌 수 있다. 클립 쓰기는
+동기적이라 그동안 프레임이 잠깐 밀린다 — 몇 초에 한 번 수준의 이벤트 빈도를 전제한 프로토타입
+타협이며, 실전엔 별도 스레드로 빼야 한다.
 """
 
 import argparse
 import json
+import os
 import time
 from collections import Counter, deque
 from datetime import datetime
@@ -87,6 +93,9 @@ DEFAULT_REPEAT_THRESHOLD = 3       # 반복이 이 횟수에 도달하면 그때
 
 EVENTS_LOG_PATH = "events.jsonl"   # 위반 확정/해제 이력. 알림 설정과 무관하게 항상 기록됨
 
+CLIP_DIR = "clips"                 # 경보 구간 클립 저장 폴더 (그림3/4 "경보 구간 클립(10초)" 대응)
+DEFAULT_CLIP_SEC = 10.0            # 위반 확정 시점까지의 최근 N초를 클립으로 저장
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="SOP 통합 데모 (N인 1조 + 보호구 착용 + 안전구역)")
@@ -117,6 +126,10 @@ def parse_args():
                          f"매번 알리지 않고 누적만 함 (기본 {DEFAULT_REPEAT_COOLDOWN_MIN})")
     p.add_argument("--repeat-threshold", type=int, default=DEFAULT_REPEAT_THRESHOLD,
                     help=f"반복 횟수가 이 값에 도달하면 그때 요약 알림 1번 발송 (기본 {DEFAULT_REPEAT_THRESHOLD})")
+    p.add_argument("--clip-sec", type=float, default=DEFAULT_CLIP_SEC,
+                    help=f"위반 확정 시 저장할 경보 구간 클립 길이(초) (기본 {DEFAULT_CLIP_SEC})")
+    p.add_argument("--no-clip", action="store_true",
+                    help="경보 구간 클립 저장을 끔 (디스크 아끼고 싶을 때)")
     return p.parse_args()
 
 
@@ -147,10 +160,61 @@ def log_event(kind, rule, target, detail):
         print(f"[log] 이벤트 기록 실패: {e}")
 
 
-def on_violation_confirmed(args, throttle, rule, target, title, detail, now):
+class FrameBuffer:
+    """최근 window_sec 초의 프레임을 들고 있다가, 위반 확정 시점에 그 구간을
+    클립으로 저장할 수 있게 한다 (기획안 그림3/4 "경보 구간 클립(10초)" 대응)."""
+
+    def __init__(self, window_sec):
+        self.window_sec = window_sec
+        self.buffer = deque()   # (t, frame) — frame은 그 시점의 복사본
+
+    def append(self, frame, now):
+        self.buffer.append((now, frame.copy()))
+        while self.buffer and now - self.buffer[0][0] > self.window_sec:
+            self.buffer.popleft()
+
+    def snapshot(self):
+        """현재 버퍼의 (프레임 리스트, 추정 FPS)를 반환. 프레임이 2개 미만이면 빈 리스트."""
+        frames = [f for _, f in self.buffer]
+        if len(self.buffer) >= 2:
+            duration = self.buffer[-1][0] - self.buffer[0][0]
+            fps = (len(self.buffer) - 1) / duration if duration > 0 else 10.0
+        else:
+            frames, fps = [], 10.0
+        return frames, fps
+
+
+def save_clip(frame_buffer, rule, target, now):
+    """FrameBuffer 스냅샷을 mp4로 저장하고 파일 경로를 반환 (실패/프레임 없으면 None).
+    쓰기 자체는 동기적이라 그동안 메인 루프가 잠깐 멈춘다 — 클립이 몇 초에 한 번 수준으로만
+    발생한다는 전제의 프로토타입 타협. 실전엔 별도 스레드로 빼야 프레임이 안 밀린다."""
+    frames, fps = frame_buffer.snapshot()
+    if not frames:
+        return None
+    os.makedirs(CLIP_DIR, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    target_str = f"_id{target}" if target is not None else ""
+    path = os.path.join(CLIP_DIR, f"{ts}_{rule}{target_str}.mp4")
+    h, w = frames[0].shape[:2]
+    writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), max(fps, 1.0), (w, h))
+    try:
+        if not writer.isOpened():
+            return None
+        for f in frames:
+            writer.write(f)
+    finally:
+        writer.release()
+    return path
+
+
+def on_violation_confirmed(args, throttle, frame_buffer, rule, target, title, detail, now):
     """위반이 새로 확정된 순간(상승 엣지)에 호출하는 공통 지점.
-    새 규칙이 추가돼도 이 함수만 호출하면 로그·알림·(나중에 클립 저장까지) 다 따라온다."""
+    새 규칙이 추가돼도 이 함수만 호출하면 로그·클립 저장·알림이 다 따라온다."""
     log_event("confirmed", rule, target, detail)
+    if not args.no_clip:
+        clip_path = save_clip(frame_buffer, rule, target, now)
+        if clip_path:
+            log_event("clip_saved", rule, target, clip_path)
     if args.push_url:
         ok, note = throttle.should_notify((rule, target), now)
         if ok:
@@ -492,6 +556,8 @@ def main():
     if args.push_url:
         print(f"알림: {args.push_url} | 반복 억제: {args.repeat_cooldown_min}분 안 재발 시 "
               f"{args.repeat_threshold}회마다 요약 1번")
+    print(f"경보 구간 클립: {'끔' if args.no_clip else f'{args.clip_sec}초 -> {CLIP_DIR}/'} | "
+          f"이벤트 로그: {EVENTS_LOG_PATH}")
 
     person_model = YOLO(PERSON_MODEL_PATH)
     helmet_model = YOLO(HELMET_MODEL_PATH)
@@ -519,6 +585,7 @@ def _run(cap, person_model, helmet_model, detector, args, zone_enabled):
     prev_helmet_violation_ids = set()
     prev_zone_violation_ids = set()
     repeat_throttle = RepeatThrottle(args.repeat_cooldown_min * 60, args.repeat_threshold)
+    frame_buffer = FrameBuffer(args.clip_sec)
 
     while True:
         ret, frame = cap.read()
@@ -527,6 +594,8 @@ def _run(cap, person_model, helmet_model, detector, args, zone_enabled):
             break
 
         now = time.time()
+        if not args.no_clip:
+            frame_buffer.append(frame, now)
 
         person_res = person_model.track(
             frame, classes=[PERSON_CLASS], conf=PERSON_CONF, imgsz=IMGSZ,
@@ -592,13 +661,13 @@ def _run(cap, person_model, helmet_model, detector, args, zone_enabled):
         # 위반 확정/해제는 알림 설정과 무관하게 항상 이벤트 로그에 남는다 (on_violation_* 내부에서
         # push_url 있을 때만 실제 발송까지 함). 새 규칙이 추가돼도 이 호출 패턴만 따라가면 된다.
         if crew_violation and not prev_crew_violation:
-            on_violation_confirmed(args, repeat_throttle, "crew", None,
+            on_violation_confirmed(args, repeat_throttle, frame_buffer, "crew", None,
                                     "중대 편차 발생", f"{args.crew}인 1조 위반", now)
         for pid in helmet_violation_ids - prev_helmet_violation_ids:
-            on_violation_confirmed(args, repeat_throttle, "helmet", pid,
+            on_violation_confirmed(args, repeat_throttle, frame_buffer, "helmet", pid,
                                     "보호구 미착용", f"작업자 ID{pid} 미착용 지속", now)
         for pid in zone_violation_ids - prev_zone_violation_ids:
-            on_violation_confirmed(args, repeat_throttle, "zone", pid,
+            on_violation_confirmed(args, repeat_throttle, frame_buffer, "zone", pid,
                                     "안전구역 침범", f"작업자 ID{pid} 구역 내 위치", now)
 
         if prev_crew_violation and not crew_violation:
