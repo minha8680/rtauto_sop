@@ -24,8 +24,8 @@
     python webcam_sop.py --crew 3
     python webcam_sop.py --crew 4 --crew-hold 5 --helmet-hold 15 --zone-hold 5
 
-세부 파라미터는 --help 참고. 나중에 SOP를 JSON으로 구조화하면(Phase 3~4) 이 값들은
-명령행 인자 대신 SOP 문서에서 읽어오도록 바뀔 예정 — 지금은 그 전 단계 임시 인터페이스.
+세부 파라미터는 --help 참고. 나중에 SOP를 JSON으로 구조화하면 이 값들은 명령행 인자 대신
+SOP 문서에서 읽어오도록 바뀔 예정 — 지금은 그 전 단계 임시 인터페이스.
 
 push_server.py(Web Push 프로토타입)를 같이 띄워두면 --push-url 로 실제 알림 연동:
 
