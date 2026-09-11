@@ -16,12 +16,17 @@
 
 주의: 이 방식은 카메라가 그 짧은 시간 동안 "미세하게만" 움직였다는 전제다.
 사람이 실제로 몸을 크게 홱 돌리면 직전 위치가 더 이상 맞지 않아 구역이 잘못
-그려질 수 있다 — STALE_SEC를 너무 길게 잡지 않는 이유. 근본적으로 더 정확히
-하려면(예: 3개만 보여도 기하학적으로 4번째 추정) 추가 보강이 필요하다.
+그려질 수 있다 — STALE_SEC를 너무 길게 잡지 않는 이유.
+
+마커가 정확히 3개만 보이면(1개 가림) 평행사변형 근사로 4번째를 추정해 계속 판정한다
+(사각형 대각선의 중점이 같다는 성질 이용). 화면에서 그 모서리는 빈 원(마젠타)으로
+표시되어 "실측이 아니라 추정"임을 구분할 수 있다. 아래 ALLOW_ZONE_ESTIMATE = False 로 끌 수 있다
+(webcam_sop.py에서는 같은 기능이 --no-zone-estimate 커맨드라인 인자다).
 
 한계 (개념 검증 수준, 실전 적용 전 별도 작업 필요):
-  - 같은 프레임이 아니라 "최근 봤음"으로 완화했지만, 그래도 4개 다 최근에 봤어야 함
-    (3개만 있을 때 기하학적으로 추정하는 건 아직 없음)
+  - 3개 추정도 카메라가 정면에 가깝게 볼 때 잘 맞는 근사다. 각도가 심하게 기울면
+    (원근 왜곡 큼) 오차가 커진다 — 완벽한 3D 복원이 아님
+  - 마커가 2개 이하로 줄면 추정 자체가 불가능해 판정 보류로 돌아간다
   - 종이 마커는 실내 테스트용. 현장은 방수·내구성 있는 재질로 별도 제작 필요
   - 지속시간(HOLD/CLEAR, STALE_SEC)은 임시값. 현장 실측 후 조정
 """
@@ -49,6 +54,7 @@ ZONE_CLEAR_SEC = 3.0
 
 STALE_SEC = 0.4        # 마커를 "최근에 봤다"고 인정하는 시간 (카메라 미세 흔들림 흡수)
                         # 너무 길면 카메라가 실제로 크게 움직였을 때 옛 위치를 써서 오판정 위험 커짐
+ALLOW_ZONE_ESTIMATE = True   # 마커 3개(1개 가림)일 때 평행사변형 근사로 4번째 추정. False면 예전처럼 4개 필수
 
 try:
     _FONT = ImageFont.truetype("C:/Windows/Fonts/malgun.ttf", 20)
@@ -124,10 +130,18 @@ def foot_point(box):
 class MarkerMemory:
     """각 마커 ID의 "마지막으로 본 위치와 시각"을 기억한다.
     이번 프레임에 안 보여도 STALE_SEC 안이면 그 위치를 그대로 쓴다 —
-    카메라 미세 흔들림으로 인한 순간 미검출을 흡수하기 위함."""
+    카메라 미세 흔들림으로 인한 순간 미검출을 흡수하기 위함.
 
-    def __init__(self, stale_sec):
+    마커가 정확히 3개만 있으면(1개 가림) 평행사변형 근사로 4번째를 추정한다:
+    사각형 대각선의 중점이 같다는 성질(p0+p2 = p1+p3, TL+BR = TR+BL)을 이용해
+    missing = adjacent1 + adjacent2 - opposite 로 계산한다. 카메라가 정면에
+    가깝게 볼 때는 잘 맞고, 각도가 심하게 기울면(원근 왜곡 큼) 오차가 커진다 —
+    완벽한 3D 복원이 아니라 "잠깐 하나 가려도 침묵하지 않기 위한" 근사다.
+    allow_estimate=False 로 끄면 예전처럼 4개 다 있어야만 판정한다."""
+
+    def __init__(self, stale_sec, allow_estimate=True):
         self.stale_sec = stale_sec
+        self.allow_estimate = allow_estimate
         self.seen = {}   # id -> (point, t)
 
     def observe(self, current, now):
@@ -135,24 +149,54 @@ class MarkerMemory:
         for mid, pt in current.items():
             self.seen[mid] = (pt, now)
 
+    def _fresh_points(self, now):
+        """ZONE_MARKER_ORDER 안에서의 인덱스(0~3) -> 좌표, 최근 stale_sec 이내인 것만."""
+        pts = {}
+        for idx, mid in enumerate(ZONE_MARKER_ORDER):
+            if mid in self.seen:
+                pt, t = self.seen[mid]
+                if now - t <= self.stale_sec:
+                    pts[idx] = pt
+        return pts
+
+    def _status(self, idx, now):
+        mid = ZONE_MARKER_ORDER[idx]
+        age = now - self.seen[mid][1]
+        return "live" if age < 1e-6 else "memory"
+
     def zone_polygon(self, now):
-        """4개 전부 STALE_SEC 안에 봤으면 (폴리곤, 각 모서리가 이번 프레임 실측인지) 반환."""
-        poly, fresh = [], []
-        for mid in ZONE_MARKER_ORDER:
-            if mid not in self.seen:
-                return None, None
-            pt, t = self.seen[mid]
-            age = now - t
-            if age > self.stale_sec:
-                return None, None
-            poly.append(pt)
-            fresh.append(age < 1e-6)   # 이번 프레임에 방금 갱신됐는지 (거의 0초 전)
-        return poly, fresh
+        """반환: (폴리곤[4점] 또는 None, 모서리별 상태 리스트["live"|"memory"|"estimated"] 또는 None)."""
+        pts = self._fresh_points(now)
+
+        if len(pts) == 4:
+            poly = [pts[i] for i in range(4)]
+            status = [self._status(i, now) for i in range(4)]
+            return poly, status
+
+        if len(pts) == 3 and self.allow_estimate:
+            missing = next(i for i in range(4) if i not in pts)
+            opposite = (missing + 2) % 4
+            adj_a, adj_b = (missing + 1) % 4, (missing + 3) % 4
+            est = (
+                pts[adj_a][0] + pts[adj_b][0] - pts[opposite][0],
+                pts[adj_a][1] + pts[adj_b][1] - pts[opposite][1],
+            )
+            poly, status = [], []
+            for i in range(4):
+                if i == missing:
+                    poly.append(est)
+                    status.append("estimated")
+                else:
+                    poly.append(pts[i])
+                    status.append(self._status(i, now))
+            return poly, status
+
+        return None, None
 
 
 def detect_zone_polygon(detector, frame, memory, now):
-    """마커를 검출하고 memory에 기록한 뒤, memory 기준(최근 STALE_SEC 이내)으로
-    구역 폴리곤을 반환한다. 반환: (폴리곤 또는 None, 검출목록, 모서리별 실측여부 또는 None)."""
+    """마커를 검출하고 memory에 기록한 뒤, memory 기준(최근 STALE_SEC 이내, 필요시 3점 추정)으로
+    구역 폴리곤을 반환한다. 반환: (폴리곤 또는 None, 검출목록, 모서리별 상태 또는 None)."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     corners, ids, _ = detector.detectMarkers(gray)
     current = {}
@@ -160,21 +204,33 @@ def detect_zone_polygon(detector, frame, memory, now):
         for c, i in zip(corners, ids.flatten()):
             current[int(i)] = tuple(c[0].mean(axis=0))
     memory.observe(current, now)
-    poly, fresh = memory.zone_polygon(now)
-    return poly, sorted(current.keys()), fresh
+    poly, status = memory.zone_polygon(now)
+    return poly, sorted(current.keys()), status
 
 
-def draw_overlay(bgr, zone_poly, zone_fresh, person_items, statuses, violation_ids, marker_ids_seen):
+CORNER_DOT_COLOR = {
+    "live": (0, 255, 0),        # 이번 프레임에 실제로 검출
+    "memory": (255, 160, 0),    # 최근(STALE_SEC 이내) 기억한 위치 사용
+    "estimated": (255, 0, 190), # 3개로 평행사변형 근사 추정
+}
+
+
+def draw_overlay(bgr, zone_poly, zone_status, person_items, statuses, violation_ids, marker_ids_seen):
     img = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
     d = ImageDraw.Draw(img)
 
     if zone_poly:
+        estimated = zone_status.count("estimated") if zone_status else 0
+        zone_label = "위험구역" + (" (1개 추정)" if estimated else "")
         d.polygon(zone_poly, outline=(255, 200, 0), width=3)
-        d.text((zone_poly[0][0], zone_poly[0][1] - 24), "위험구역", font=_FONT_SMALL, fill=(255, 200, 0))
-        # 모서리 점: 초록 = 이번 프레임에 실제로 봄, 주황 = 최근 기억(살짝 흔들려도 유지 중)
-        for (x, y), is_fresh in zip(zone_poly, zone_fresh):
-            color = (0, 255, 0) if is_fresh else (255, 160, 0)
-            d.ellipse([x - 6, y - 6, x + 6, y + 6], fill=color)
+        d.text((zone_poly[0][0], zone_poly[0][1] - 24), zone_label, font=_FONT_SMALL, fill=(255, 200, 0))
+        # 모서리 점: 초록 = 실시간 검출, 주황 = 최근 기억, 빈 마젠타 원 = 3점으로 추정
+        for (x, y), st in zip(zone_poly, zone_status):
+            c = CORNER_DOT_COLOR[st]
+            if st == "estimated":
+                d.ellipse([x - 7, y - 7, x + 7, y + 7], outline=c, width=2)
+            else:
+                d.ellipse([x - 6, y - 6, x + 6, y + 6], fill=c)
 
     for pid, box in person_items:
         x1, y1, x2, y2 = [int(v) for v in box]
@@ -186,8 +242,8 @@ def draw_overlay(bgr, zone_poly, zone_fresh, person_items, statuses, violation_i
         d.rectangle([x1, max(0, y1 - 22), x1 + 10 * len(tag), y1], fill=color)
         d.text((x1 + 2, max(0, y1 - 21)), tag, font=_FONT_SMALL, fill=(255, 255, 255))
 
-    zone_status = f"마커 인식: {marker_ids_seen} / 필요 {ZONE_MARKER_ORDER}"
-    d.text((12, 8), zone_status, font=_FONT, fill=(0, 255, 0) if zone_poly else (255, 120, 0))
+    marker_status_text = f"마커 인식: {marker_ids_seen} / 필요 {ZONE_MARKER_ORDER}"
+    d.text((12, 8), marker_status_text, font=_FONT, fill=(0, 255, 0) if zone_poly else (255, 120, 0))
 
     w, h = img.size
     if not zone_poly:
@@ -213,7 +269,7 @@ def main():
         return
 
     zone_states = {}   # track_id -> ZoneState
-    marker_memory = MarkerMemory(STALE_SEC)
+    marker_memory = MarkerMemory(STALE_SEC, allow_estimate=ALLOW_ZONE_ESTIMATE)
     prev_t = time.time()
 
     while True:
@@ -232,7 +288,7 @@ def main():
             (int(b.id), person_box_xyxy(b)) for b in person_res[0].boxes if b.id is not None
         ]
 
-        zone_poly, marker_ids_seen, zone_fresh = detect_zone_polygon(detector, frame, marker_memory, now)
+        zone_poly, marker_ids_seen, zone_corner_status = detect_zone_polygon(detector, frame, marker_memory, now)
         zone_poly_i = [(int(x), int(y)) for x, y in zone_poly] if zone_poly else None
 
         statuses, violation_ids = {}, set()
@@ -252,7 +308,7 @@ def main():
         for pid in [p for p, s in zone_states.items() if now - s.last_seen > 30]:
             del zone_states[pid]
 
-        annotated = draw_overlay(frame, zone_poly_i, zone_fresh, person_items, statuses, violation_ids, marker_ids_seen)
+        annotated = draw_overlay(frame, zone_poly_i, zone_corner_status, person_items, statuses, violation_ids, marker_ids_seen)
 
         fps = 1.0 / (now - prev_t) if now > prev_t else 0.0
         prev_t = now

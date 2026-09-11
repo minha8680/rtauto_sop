@@ -9,6 +9,9 @@
 중심점이 들어오는지로 "그 사람이 실제로 썼는가"를 판정한다 (webcam_test.md 한계 1 해결).
 안전구역도 마찬가지로 "화면 좌표 고정"이 아니라 마커 위치 기준으로 재계산한다 —
 착용형 카메라가 움직여도 구역이 따라오고, 마커가 안 보이면 판정 보류로 침묵한다.
+마커 4개 중 1개가 가려져 3개만 보이면, 평행사변형 근사(대각선 중점이 같다는 성질)로
+4번째를 추정해 계속 판정한다 — 화면에 그 모서리는 빈 원(마젠타색)으로 표시되어
+"이건 실측이 아니라 추정"임을 구분할 수 있다. --no-zone-estimate 로 끌 수 있다.
 준비물(마커 인쇄·배치)은 webcam_zone.py 상단 docstring 참고.
 
 규칙 3개, 전부 SustainedLatch(지속 시간 채워야 확정/해제)로 처리한다.
@@ -87,6 +90,9 @@ def parse_args():
                     help=f"안전구역 침범 해제까지 지속 시간(초) (기본 {DEFAULT_ZONE_CLEAR_SEC})")
     p.add_argument("--no-zone", action="store_true",
                     help="마커를 준비 못 했을 때 안전구역 판정을 끄고 인원수+보호구만 실행")
+    p.add_argument("--no-zone-estimate", action="store_true",
+                    help="마커 3개(1개 가림)일 때 평행사변형 근사로 4번째를 추정하는 기능을 끄고, "
+                         "예전처럼 4개 다 보여야만 구역을 판정. 추정이 못 미더울 때 검증용")
     p.add_argument("--push-url", type=str, default=None,
                     help="위반 '확정' 순간(재발 아님, 새로 걸릴 때만) push_server.py의 /notify로 "
                          "POST 요청. 예: http://localhost:8000/notify. 생략하면 알림 전송 안 함")
@@ -188,28 +194,67 @@ class ZoneState:
 class MarkerMemory:
     """각 마커 ID의 "마지막으로 본 위치와 시각"을 기억한다.
     이번 프레임에 안 보여도 STALE_SEC 안이면 그 위치를 그대로 쓴다 —
-    카메라 미세 흔들림으로 인한 순간 미검출을 흡수하기 위함."""
+    카메라 미세 흔들림으로 인한 순간 미검출을 흡수하기 위함.
 
-    def __init__(self, stale_sec):
+    마커가 정확히 3개만 있으면(1개 가림) 평행사변형 근사로 4번째를 추정한다:
+    사각형 대각선의 중점이 같다는 성질(p0+p2 = p1+p3, TL+BR = TR+BL)을 이용해
+    missing = adjacent1 + adjacent2 - opposite 로 계산한다. 카메라가 정면에
+    가깝게 볼 때는 잘 맞고, 각도가 심하게 기울면(원근 왜곡 큼) 오차가 커진다 —
+    완벽한 3D 복원이 아니라 "잠깐 하나 가려도 침묵하지 않기 위한" 근사다.
+    allow_estimate=False 로 끄면 예전처럼 4개 다 있어야만 판정한다."""
+
+    def __init__(self, stale_sec, allow_estimate=True):
         self.stale_sec = stale_sec
+        self.allow_estimate = allow_estimate
         self.seen = {}   # id -> (point, t)
 
     def observe(self, current, now):
         for mid, pt in current.items():
             self.seen[mid] = (pt, now)
 
+    def _fresh_points(self, now):
+        """ZONE_MARKER_ORDER 안에서의 인덱스(0~3) -> 좌표, 최근 stale_sec 이내인 것만."""
+        pts = {}
+        for idx, mid in enumerate(ZONE_MARKER_ORDER):
+            if mid in self.seen:
+                pt, t = self.seen[mid]
+                if now - t <= self.stale_sec:
+                    pts[idx] = pt
+        return pts
+
+    def _status(self, idx, now):
+        mid = ZONE_MARKER_ORDER[idx]
+        age = now - self.seen[mid][1]
+        return "live" if age < 1e-6 else "memory"
+
     def zone_polygon(self, now):
-        poly, fresh = [], []
-        for mid in ZONE_MARKER_ORDER:
-            if mid not in self.seen:
-                return None, None
-            pt, t = self.seen[mid]
-            age = now - t
-            if age > self.stale_sec:
-                return None, None
-            poly.append(pt)
-            fresh.append(age < 1e-6)
-        return poly, fresh
+        """반환: (폴리곤[4점] 또는 None, 모서리별 상태 리스트["live"|"memory"|"estimated"] 또는 None)."""
+        pts = self._fresh_points(now)
+
+        if len(pts) == 4:
+            poly = [pts[i] for i in range(4)]
+            status = [self._status(i, now) for i in range(4)]
+            return poly, status
+
+        if len(pts) == 3 and self.allow_estimate:
+            missing = next(i for i in range(4) if i not in pts)
+            opposite = (missing + 2) % 4
+            adj_a, adj_b = (missing + 1) % 4, (missing + 3) % 4
+            est = (
+                pts[adj_a][0] + pts[adj_b][0] - pts[opposite][0],
+                pts[adj_a][1] + pts[adj_b][1] - pts[opposite][1],
+            )
+            poly, status = [], []
+            for i in range(4):
+                if i == missing:
+                    poly.append(est)
+                    status.append("estimated")
+                else:
+                    poly.append(pts[i])
+                    status.append(self._status(i, now))
+            return poly, status
+
+        return None, None
 
 
 def box_xyxy(b):
@@ -252,6 +297,7 @@ def match_helmet_to_persons(person_items, helmet_boxes):
 
 
 def detect_zone_polygon(detector, frame, memory, now):
+    """반환: (폴리곤 또는 None, 검출된 마커 id 목록, 모서리별 상태["live"|"memory"|"estimated"])."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     corners, ids, _ = detector.detectMarkers(gray)
     current = {}
@@ -259,8 +305,8 @@ def detect_zone_polygon(detector, frame, memory, now):
         for c, i in zip(corners, ids.flatten()):
             current[int(i)] = tuple(c[0].mean(axis=0))
     memory.observe(current, now)
-    poly, fresh = memory.zone_polygon(now)
-    return poly, sorted(current.keys()), fresh
+    poly, status = memory.zone_polygon(now)
+    return poly, sorted(current.keys()), status
 
 
 def combined_color(helmet_stat, zone_stat, is_violation):
@@ -275,23 +321,35 @@ def combined_color(helmet_stat, zone_stat, is_violation):
     return (0, 170, 0)
 
 
-def draw_overlay(bgr, zone_poly, zone_fresh, marker_ids_seen, person_items,
-                  helmet_status, zone_status, helmet_violation_ids, zone_violation_ids,
+CORNER_DOT_COLOR = {
+    "live": (0, 255, 0),        # 이번 프레임에 실제로 검출
+    "memory": (255, 160, 0),    # 최근(STALE_SEC 이내) 기억한 위치 사용
+    "estimated": (255, 0, 190), # 3개로 평행사변형 근사 추정
+}
+
+
+def draw_overlay(bgr, zone_poly, zone_status, marker_ids_seen, person_items,
+                  helmet_status, zone_person_status, helmet_violation_ids, zone_violation_ids,
                   crew_banner, crew_rgb, zone_enabled):
     img = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
     d = ImageDraw.Draw(img)
 
     if zone_poly:
+        estimated = zone_status.count("estimated") if zone_status else 0
+        zone_label = "위험구역" + (" (1개 추정)" if estimated else "")
         d.polygon(zone_poly, outline=(255, 200, 0), width=3)
-        d.text((zone_poly[0][0], zone_poly[0][1] - 24), "위험구역", font=_FONT_SMALL, fill=(255, 200, 0))
-        for (x, y), is_fresh in zip(zone_poly, zone_fresh):
-            c = (0, 255, 0) if is_fresh else (255, 160, 0)
-            d.ellipse([x - 6, y - 6, x + 6, y + 6], fill=c)
+        d.text((zone_poly[0][0], zone_poly[0][1] - 24), zone_label, font=_FONT_SMALL, fill=(255, 200, 0))
+        for (x, y), st in zip(zone_poly, zone_status):
+            c = CORNER_DOT_COLOR[st]
+            if st == "estimated":
+                d.ellipse([x - 7, y - 7, x + 7, y + 7], outline=c, width=2)   # 빈 원 = "실측 아님" 표시
+            else:
+                d.ellipse([x - 6, y - 6, x + 6, y + 6], fill=c)
 
     for pid, box in person_items:
         x1, y1, x2, y2 = [int(v) for v in box]
         h_stat = helmet_status.get(pid, "미확인")
-        z_stat = zone_status.get(pid, "미확인") if zone_enabled else "미확인"
+        z_stat = zone_person_status.get(pid, "미확인") if zone_enabled else "미확인"
         violated = pid in helmet_violation_ids or pid in zone_violation_ids
         color = combined_color(h_stat, z_stat, violated)
 
@@ -358,7 +416,7 @@ def _run(cap, person_model, helmet_model, detector, args, zone_enabled):
     crew_rule = SustainedLatch(args.crew_hold, args.crew_clear)
     person_states = {}               # track_id -> PersonState (보호구)
     zone_states = {}                 # track_id -> ZoneState (안전구역)
-    marker_memory = MarkerMemory(STALE_SEC)
+    marker_memory = MarkerMemory(STALE_SEC, allow_estimate=not args.no_zone_estimate)
     prev_t = time.time()
 
     # 알림은 "새로 위반이 걸린 순간"에만 보낸다 (반복 억제는 여기선 안 함 — 프로토타입)
@@ -386,9 +444,9 @@ def _run(cap, person_model, helmet_model, detector, args, zone_enabled):
         frame_helmet_status = match_helmet_to_persons(person_items, helmet_res[0].boxes)
 
         if zone_enabled:
-            zone_poly, marker_ids_seen, zone_fresh = detect_zone_polygon(detector, frame, marker_memory, now)
+            zone_poly, marker_ids_seen, zone_corner_status = detect_zone_polygon(detector, frame, marker_memory, now)
         else:
-            zone_poly, marker_ids_seen, zone_fresh = None, [], None
+            zone_poly, marker_ids_seen, zone_corner_status = None, [], None
         zone_poly_i = [(int(x), int(y)) for x, y in zone_poly] if zone_poly else None
 
         # 인원 수 안정화 (N인 1조 규칙)
@@ -447,7 +505,7 @@ def _run(cap, person_model, helmet_model, detector, args, zone_enabled):
             prev_zone_violation_ids = set(zone_violation_ids)
 
         annotated = draw_overlay(
-            frame, zone_poly_i, zone_fresh, marker_ids_seen, person_items,
+            frame, zone_poly_i, zone_corner_status, marker_ids_seen, person_items,
             helmet_status, zone_status, helmet_violation_ids, zone_violation_ids,
             crew_banner, crew_rgb, zone_enabled,
         )
