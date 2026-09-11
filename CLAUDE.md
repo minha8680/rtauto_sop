@@ -92,7 +92,30 @@ rtauto_sop/
 
 - **핵심 교훈**: helmet_v1과 v2는 학습 설정 동일, **데이터셋만 교체**. 미착용 학습 표본이
   16~64개 → 1,000개 이상으로 늘자 미착용 recall 0.00 → 0.95. "학습량이 아니라 데이터 문제".
-- 자세한 지표는 `docs/helmet_v1/metrics.md`, `docs/helmet_v2/metrics.md`.
+- 자세한 지표는 `docs/helmet_v1/metrics.md`, `docs/helmet_v2/metrics.md`,
+  웹캠 테스트 평가는 `docs/helmet_v2/webcam_test.md`.
+
+## 프로젝트 완성도 (현실 체크)
+
+지금까지 완료한 것은 **개발_진행_계획.docx Phase 1(검출 모델) 중 안전모 항목 하나**뿐이다.
+"뼈대를 만들어놨다"고 과대평가하지 말 것. 실제로 있는 것:
+
+- helmet_v2 검출 모델 (재사용 가능한 핵심 자산)
+- Colab 학습 파이프라인 (다른 클래스에 재사용)
+- `main.py` — 웹캠 → 검출 → 화면 표시, **약 30줄의 데모 수준**
+- 실험 결과·한계 문서
+
+**아직 없는 것 (= 시스템 본체)**: 추적(ByteTrack), person 검출·인원 수 카운팅, 상태 집계(3초 창),
+SOP JSON + 규칙 판정 엔진, 편차 등급 산정, 음성 경로(STT/TTS/헤드셋), Web Push 알림, 엣지 PC 통합,
+heartbeat·판정 보류 로직.
+
+**바디캠이 와도 "꽂으면 시스템이 돈다"가 아니다.** `cv2.VideoCapture(0)` → `VideoCapture("rtsp://…")`
+한 줄 변경 자체는 쉽지만, RTSP는 버퍼링·지연 관리, 끊김 재연결, 2채널 동시 수신, 3fps 다운샘플링,
+SoftAP 무선망 구성이 별도로 필요하다 (며칠짜리). 바디캠 입고의 의미는 **helmet_v2 모델을 실제
+현장 거리·화각(2~4m, 안전모 22~35px)에서 검증 시작**할 수 있게 되는 것이다.
+
+"helmet 검출 = 착용"이 아니라는 점도 중요 (`webcam_test.md` 한계 1). 손에 든 헬멧도 helmet으로
+잡히므로, 착용 판정은 person/head 박스와 helmet 박스의 공간 관계로 규칙 단계에서 해야 한다.
 
 ## 데이터셋 주의사항
 
@@ -137,7 +160,11 @@ python download_dataset.py
 
 ## 다음 작업 (개발_진행_계획.docx Phase 순)
 
-1. helmet_v2 로컬 웹캠 테스트 + conf 임계값 튜닝  ← 진행 중
-2. 인원 수 검출 (person, COCO 사전학습 → 학습 불필요) + ByteTrack 추적
-3. 검출→추적→규칙 1개(2인 1조) 미니 통합 데모
-4. (병행) 세정기 SOP 문서 → JSON 스키마 설계
+- [x] helmet_v2 학습 + 로컬 웹캠 테스트 평가
+- [ ] **인원 수 검출 (person)** — `yolov8n.pt` COCO 사전학습에 person 이미 있음, 학습 불필요.
+  근거리·원거리 인물 검출 확인, 겹침/화각 이탈 시 누락률 측정
+- [ ] **추적 (ByteTrack)** — `model.track(...persist=True, tracker="bytetrack.yaml")`.
+  프레임 간 ID 유지, 인원 수 떨림 흡수
+- [ ] helmet_v2 + person + 추적 결합 → "2인 1조" 규칙 1개 미니 데모 (3초 지속 시 위반 판정)
+- [ ] (병행) 세정기 SOP → JSON 스키마 설계
+- [ ] (제품화 시점) 검출 프레임워크 라이선스 재검토 (YOLOv8 AGPL → YOLOX/RT-DETR Apache)
