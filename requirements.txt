@@ -1,0 +1,44 @@
+# -*- coding: utf-8 -*-
+# rtauto_sop 로컬 실행 환경 (webcam_*.py, push_server.py 등)
+#
+# 이 파일 맨 위 인코딩 선언은 장식이 아니라 필수다 — 없으면 pip가 이 파일을 로케일
+# 인코딩(이 환경은 cp949)으로 읽으려다 한글 주석에서 UnicodeDecodeError로 깨진다.
+# 이 파일을 고칠 때 첫 줄은 절대 지우지 말 것.
+#
+# 이 파일은 "로컬 추론/프로토타입용"이다. 학습은 Google Colab에서 하고 Colab이
+# 자체적으로 패키지를 설치하므로(README.md 7절 참고) 이 파일과 무관하다.
+#
+# 설치:
+#   pip install --no-cache-dir -r requirements.txt
+# (--no-cache-dir 없이 설치하다 pip 캐시가 메모리/디스크를 터뜨린 이력 있음 — CLAUDE.md 참고)
+#
+# torch/torchvision 주의: 아래 버전은 로컬의 CPU 빌드다(GTX 1050 Ti는 있지만 로컬은
+# 추론 전용, 학습은 Colab). 그냥 `pip install -r requirements.txt`만 실행하면 플랫폼에
+#따라 다른 빌드가 잡힐 수 있으니, 정확히 CPU 빌드로 맞추려면 먼저 이렇게 설치:
+#   pip install --no-cache-dir torch==2.14.0 torchvision==0.29.0
+# 그다음 이 파일로 나머지를 설치해도 된다.
+
+# ── 검출/추적 (webcam_helmet.py, webcam_person.py, webcam_sop.py, webcam_zone.py, predict.py) ──
+ultralytics==8.4.144
+torch==2.14.0          # CPU 빌드. GPU 학습은 Colab에서
+torchvision==0.29.0
+opencv-python==5.0.0.93  # headless 버전과 같이 깔리면 cv2.imshow가 깨짐 — CLAUDE.md 참고
+numpy==2.3.5
+pillow==12.3.0          # 한글 오버레이 텍스트 렌더링(PIL+맑은 고딕)에 사용
+lap==0.5.13             # ByteTrack(추적) 내부 의존성
+
+# ── 안전구역 PoC (webcam_zone.py, generate_markers.py, debug_aruco.py) ──
+# ArUco는 opencv-python에 포함(cv2.aruco), 별도 패키지 없음
+
+# ── Web Push 알림 프로토타입 (push_server.py, generate_vapid_keys.py) ──
+fastapi==0.141.1
+uvicorn==0.52.4
+pydantic==2.13.5
+pywebpush==2.5.0
+cryptography==50.0.1
+py-vapid==1.9.4
+requests==2.34.2        # webcam_sop.py --push-url 발송에도 사용
+
+# ── 선택(개발 도구, 위 스크립트들 실행엔 불필요) ──
+# python-docx==1.2.0    # 기획안/체크리스트/개발 일지 같은 내부 문서(.docx) 생성용
+# roboflow==1.4.2       # helmet_v1 실험 때 로컬 다운로드용. 현재 미사용(README.md 7절 참고)

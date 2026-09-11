@@ -222,7 +222,8 @@ python webcam_sop.py --push-url http://localhost:8000/notify   # 터미널 2
 - 로컬 `torch`는 CPU 빌드. 추론(웹캠)은 CPU로 실시간 충분
 
 ```bash
-source venv/Scripts/activate      # 가상환경 활성화
+source venv/Scripts/activate                       # 가상환경 활성화
+pip install --no-cache-dir -r requirements.txt      # 최초 1회 (또는 새 패키지 추가 후)
 ```
 
 ### 학습 (Google Colab)
@@ -265,6 +266,7 @@ python predict.py           # test 이미지 폴더 일괄 추론 → runs/ 에 
 | `generate_vapid_keys.py` | Web Push용 VAPID 키 생성 (최초 1회) |
 | `generate_markers.py`, `markers/` | 안전구역용 ArUco 마커 생성/보관 |
 | `trackers/bytetrack_person.yaml` | 저FPS(로컬 CPU)용 ByteTrack 튜닝 설정 |
+| `requirements.txt` | 로컬 실행 환경 (학습은 Colab이라 무관) |
 | `webcam_helmet.py`, `webcam_person.py`, `webcam_zone.py` | 단계별 검증용 단일 기능 스크립트 |
 | `debug_aruco.py` | 마커 인식 진단 (코드 문제 vs 조명·거리 문제 분리) |
 | `predict.py` | 학습 가중치로 test 이미지 일괄 추론 |

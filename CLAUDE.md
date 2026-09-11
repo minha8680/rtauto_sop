@@ -73,13 +73,16 @@ STEP 소요시간도 체류시간 기반이라 각 채널이 독립 측정 가�
   로컬은 추론(웹캠) 전용, **학습은 Colab에서** 한다.
 - **디스크 여유가 적다** (C: ~10GB 대). CUDA torch(~5GB)는 로컬에 설치 시도하다 실패한 이력 있음.
   `pip install` 시 `--no-cache-dir` 를 붙일 것 (pip 캐시가 메모리/디스크를 터뜨린 적 있음).
-- Python 패키지는 `venv/`에 설치됨. `requirements.txt`는 아직 없음(만들면 유용).
-  설치돼 있는 주요 패키지: `ultralytics`, `torch(cpu)`, `opencv-python`(headless 아님), `roboflow`,
-  `python-docx`, `lap`(ByteTrack용), `fastapi`+`uvicorn`+`pywebpush`(Web Push 프로토타입용), `requests`.
+- Python 패키지는 `venv/`에 설치됨. **`requirements.txt` 있음** — `pip install --no-cache-dir -r requirements.txt`.
+  로컬 추론/프로토타입용이고 학습(Colab)과는 무관. 새 패키지 설치하면 이 파일도 갱신할 것.
   - `opencv-python-headless`가 딸려 들어오면 `cv2.imshow`가 안 된다. headless 제거 후 `opencv-python` 재설치.
   - 콘솔이 **cp949**라 `print()`에 em-dash(—) 같은 비-cp949 문자를 넣으면 `UnicodeEncodeError`가 난다.
     스크립트 출력문엔 일반 하이픈을 쓸 것. 파일 읽기/쓰기는 항상 `encoding="utf-8"` 명시.
   - 한글 파일명을 bash 명령줄로 넘기면 깨진다. 한글 경로가 필요한 작업은 .py 파일로 작성해서 실행할 것.
+  - **pip 자체도 cp949 문제를 겪는다**: 한글 주석이 든 `.txt`(requirements.txt 등)에 PEP263
+    인코딩 선언(`# -*- coding: utf-8 -*-`) 첫 줄이 없으면 pip가 로케일(cp949)로 읽으려다
+    `UnicodeDecodeError`로 깨진다. 한글 주석 넣는 텍스트 파일을 pip가 읽는 경우 항상 첫 줄에
+    이 선언을 넣을 것 (requirements.txt에 이미 적용됨, 지우지 말 것).
 
 ## 학습 워크플로 (중요)
 
@@ -113,6 +116,7 @@ rtauto_sop/
 ├── generate_markers.py  # ArUco 마커 4장(TL/TR/BR/BL) 생성 → markers/
 ├── markers/             # 생성된 마커 PNG (프린트해서 구역 네 모서리에 배치)
 ├── trackers/bytetrack_person.yaml  # 저FPS(CPU)용 ByteTrack 튜닝 설정
+├── requirements.txt      # 로컬 실행 환경. 첫 줄 인코딩 선언 지우지 말 것(위 cp949 메모 참고)
 │
 │   ── 아래는 단계별 검증용으로 남겨둔 단일 기능 스크립트 (통합본은 webcam_sop.py) ──
 ├── webcam_helmet.py     # 안전모 착용/미착용만
