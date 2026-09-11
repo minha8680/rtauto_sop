@@ -199,8 +199,12 @@ uvicorn push_server:app --port 8000              # 터미널 1 → localhost:800
 python webcam_sop.py --push-url http://localhost:8000/notify   # 터미널 2
 ```
 
-프로토타입 수준입니다 — localhost 전용(HTTPS 없음), 구독 정보는 JSON 파일 저장, 30초 재발송·
-확인(ACK)·등급별 차등 발송은 미구현. "알림이 실제로 도달하는가"만 검증한 단계입니다.
+같은 위반이 해제됐다 금방 다시 걸리는 **반복(flapping)은 억제**합니다 — 기본 5분 안에 재발하면
+매번 알리지 않고 누적하다가 3회째에 "N회 반복" 요약 알림 1번만 보냅니다
+(`--repeat-cooldown-min`, `--repeat-threshold`로 조정).
+
+그래도 프로토타입 수준입니다 — localhost 전용(HTTPS 없음), 구독 정보는 JSON 파일 저장, 30초
+재발송·확인(ACK)·등급별 차등 발송은 미구현.
 
 ### 현재 완성도
 

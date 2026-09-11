@@ -32,7 +32,10 @@ push_server.py(Web Push 프로토타입)를 같이 띄워두면 --push-url 로 �
     uvicorn push_server:app --port 8000        # 다른 터미널에서 먼저 실행
     python webcam_sop.py --push-url http://localhost:8000/notify
 
-위반이 "새로 확정된 순간"에만 알림을 보낸다. 반복 억제·등급별 차등은 아직 없음(프로토타입).
+위반이 "새로 확정된 순간"에만 알림을 보낸다. 해제 후 --repeat-cooldown-min(기본 5분) 안에
+같은 유형(규칙+사람)이 다시 걸리면 반복(flapping)으로 보고 매번 알리지 않고 누적만 하다가,
+--repeat-threshold(기본 3)회에 도달하면 "N회 반복" 요약 알림 1번만 보낸다 (RepeatThrottle).
+등급별 차등 발송(중대/주의별 재발송·확인)은 아직 없음 — CLAUDE.md 알림 설계 섹션 참고.
 """
 
 import argparse
@@ -71,6 +74,9 @@ DEFAULT_HELMET_CLEAR_SEC = 10.0
 DEFAULT_ZONE_HOLD_SEC = 3.0       # 구역 침범 확정 지속 시간 (위험요인, 2인1조와 동일하게 시작)
 DEFAULT_ZONE_CLEAR_SEC = 3.0
 
+DEFAULT_REPEAT_COOLDOWN_MIN = 5.0  # 해제 후 이 시간(분) 안에 같은 위반이 다시 걸리면 "반복"으로 간주
+DEFAULT_REPEAT_THRESHOLD = 3       # 반복이 이 횟수에 도달하면 그때 요약 알림 1번만 발송
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="SOP 통합 데모 (N인 1조 + 보호구 착용 + 안전구역)")
@@ -96,6 +102,11 @@ def parse_args():
     p.add_argument("--push-url", type=str, default=None,
                     help="위반 '확정' 순간(재발 아님, 새로 걸릴 때만) push_server.py의 /notify로 "
                          "POST 요청. 예: http://localhost:8000/notify. 생략하면 알림 전송 안 함")
+    p.add_argument("--repeat-cooldown-min", type=float, default=DEFAULT_REPEAT_COOLDOWN_MIN,
+                    help=f"해제 후 이 시간(분) 안에 같은 위반이 다시 걸리면 반복으로 간주해 "
+                         f"매번 알리지 않고 누적만 함 (기본 {DEFAULT_REPEAT_COOLDOWN_MIN})")
+    p.add_argument("--repeat-threshold", type=int, default=DEFAULT_REPEAT_THRESHOLD,
+                    help=f"반복 횟수가 이 값에 도달하면 그때 요약 알림 1번 발송 (기본 {DEFAULT_REPEAT_THRESHOLD})")
     return p.parse_args()
 
 
@@ -107,6 +118,40 @@ def send_push(push_url, title, body):
         requests.post(push_url, json={"title": title, "body": body}, timeout=1.5)
     except Exception as e:
         print(f"[push] 알림 발송 실패: {e}")
+
+
+class RepeatThrottle:
+    """같은 위반이 해제됐다가 cooldown_min 안에 다시 걸리는 "반복(flapping)"을 억제한다.
+
+    예: 사람이 안전구역을 들락날락하면 위반이 걸렸다 풀렸다 반복되는데, 매번 알림을
+    보내면 관리자가 지쳐서 무시하게 된다(alarm fatigue). 대신:
+      - 오랜만(또는 처음)의 위반은 그대로 알림
+      - 최근 해제됐다가 금방 다시 걸리면 알림 없이 반복 횟수만 누적
+      - 반복이 threshold에 도달하면 그때 "N번째 반복 발생" 요약 알림 1번
+    key로 규칙 종류+대상(사람 ID 등)을 조합해서 쓴다 — 예: ("helmet", 3), ("crew", None)."""
+
+    def __init__(self, cooldown_sec, threshold):
+        self.cooldown_sec = cooldown_sec
+        self.threshold = threshold
+        self.last_resolved = {}   # key -> 마지막으로 해제된 시각
+        self.repeat_count = {}    # key -> 이번 억제 구간 동안 쌓인 반복 횟수
+
+    def should_notify(self, key, now):
+        """위반이 새로 걸린 순간(상승 엣지)에 호출. (보낼지 여부, 안내 문구 또는 None) 반환."""
+        last = self.last_resolved.get(key)
+        if last is None or now - last > self.cooldown_sec:
+            self.repeat_count[key] = 0
+            return True, None
+        self.repeat_count[key] = self.repeat_count.get(key, 0) + 1
+        if self.repeat_count[key] >= self.threshold:
+            n = self.repeat_count[key]
+            self.repeat_count[key] = 0   # 요약 보냈으니 다음 구간을 위해 리셋
+            return True, f"(최근 {self.cooldown_sec / 60:.0f}분 내 {n}회 반복)"
+        return False, None
+
+    def mark_resolved(self, key, now):
+        """위반이 해제된 순간(하강 엣지)에 호출."""
+        self.last_resolved[key] = now
 
 
 try:
@@ -399,6 +444,9 @@ def main():
           f"보호구 미착용 (확정 {args.helmet_hold}초/해제 {args.helmet_clear}초), "
           + (f"안전구역 침범 (확정 {args.zone_hold}초/해제 {args.zone_clear}초)"
              if zone_enabled else "안전구역 판정 꺼짐"))
+    if args.push_url:
+        print(f"알림: {args.push_url} | 반복 억제: {args.repeat_cooldown_min}분 안 재발 시 "
+              f"{args.repeat_threshold}회마다 요약 1번")
 
     person_model = YOLO(PERSON_MODEL_PATH)
     helmet_model = YOLO(HELMET_MODEL_PATH)
@@ -419,10 +467,12 @@ def _run(cap, person_model, helmet_model, detector, args, zone_enabled):
     marker_memory = MarkerMemory(STALE_SEC, allow_estimate=not args.no_zone_estimate)
     prev_t = time.time()
 
-    # 알림은 "새로 위반이 걸린 순간"에만 보낸다 (반복 억제는 여기선 안 함 — 프로토타입)
+    # 알림은 "새로 위반이 걸린 순간"에만 보낸다. 해제 후 금방 다시 걸리는 반복(flapping)은
+    # RepeatThrottle이 억제 — 매번 알리지 않고 누적하다 threshold 넘으면 요약 1번만
     prev_crew_violation = False
     prev_helmet_violation_ids = set()
     prev_zone_violation_ids = set()
+    repeat_throttle = RepeatThrottle(args.repeat_cooldown_min * 60, args.repeat_threshold)
 
     while True:
         ret, frame = cap.read()
@@ -494,12 +544,31 @@ def _run(cap, person_model, helmet_model, detector, args, zone_enabled):
             crew_banner, crew_rgb = f"감시 중 (인원 {stable_count})", (200, 130, 0)
 
         if args.push_url:
+            # 상승 엣지(새로 걸림) -> 쓰로틀에 물어보고 허락하면 발송
             if crew_violation and not prev_crew_violation:
-                send_push(args.push_url, "중대 편차 발생", f"{args.crew}인 1조 위반")
+                ok, note = repeat_throttle.should_notify(("crew", None), now)
+                if ok:
+                    body = f"{args.crew}인 1조 위반" + (f" {note}" if note else "")
+                    send_push(args.push_url, "중대 편차 발생", body)
             for pid in helmet_violation_ids - prev_helmet_violation_ids:
-                send_push(args.push_url, "보호구 미착용", f"작업자 ID{pid} 미착용 지속")
+                ok, note = repeat_throttle.should_notify(("helmet", pid), now)
+                if ok:
+                    body = f"작업자 ID{pid} 미착용 지속" + (f" {note}" if note else "")
+                    send_push(args.push_url, "보호구 미착용", body)
             for pid in zone_violation_ids - prev_zone_violation_ids:
-                send_push(args.push_url, "안전구역 침범", f"작업자 ID{pid} 구역 내 위치")
+                ok, note = repeat_throttle.should_notify(("zone", pid), now)
+                if ok:
+                    body = f"작업자 ID{pid} 구역 내 위치" + (f" {note}" if note else "")
+                    send_push(args.push_url, "안전구역 침범", body)
+
+            # 하강 엣지(해제됨) -> 다음 재발이 "반복"인지 판단할 기준 시각 기록
+            if prev_crew_violation and not crew_violation:
+                repeat_throttle.mark_resolved(("crew", None), now)
+            for pid in prev_helmet_violation_ids - helmet_violation_ids:
+                repeat_throttle.mark_resolved(("helmet", pid), now)
+            for pid in prev_zone_violation_ids - zone_violation_ids:
+                repeat_throttle.mark_resolved(("zone", pid), now)
+
             prev_crew_violation = crew_violation
             prev_helmet_violation_ids = set(helmet_violation_ids)
             prev_zone_violation_ids = set(zone_violation_ids)
