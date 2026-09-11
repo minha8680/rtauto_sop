@@ -1,0 +1,12 @@
+# 저FPS(로컬 CPU) 환경용 ByteTrack 설정.
+# ultralytics 기본값 대비: match_thresh 완화(0.8->0.5), track_buffer 확대(30->60).
+# 프레임 간 이동량이 커도 같은 트랙으로 잇고, 짧은 미검출에도 트랙을 더 오래 유지.
+# 엣지 PC(GPU)로 FPS가 올라가면 기본값(bytetrack.yaml)으로 되돌려도 됨.
+
+tracker_type: bytetrack
+track_high_thresh: 0.25
+track_low_thresh: 0.1
+new_track_thresh: 0.25
+track_buffer: 60
+match_thresh: 0.5
+fuse_score: True

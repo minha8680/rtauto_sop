@@ -64,10 +64,12 @@ docs/<name>/            (results.csv, results.png, confusion_matrix.png → 커�
 
 ```
 rtauto_sop/
-├── main.py              # 웹캠 실시간 추론 테스트. MODEL_PATH=models/helmet_v2_best.pt, CONF 조정 가능
+├── webcam_helmet.py     # 안전모 착용/미착용 웹캠 테스트. MODEL_PATH=models/helmet_v2_best.pt, CONF 조정 가능
+├── webcam_person.py     # 인원 수 웹캠 테스트 (yolov8n COCO person). 다음: ByteTrack 추가
 ├── predict.py           # 학습 가중치로 test 이미지 일괄 추론
-├── download_dataset.py  # Roboflow 데이터셋 다운로드 (API 키는 환경변수 ROBOFLOW_API_KEY)
-├── train.py             # 로컬 학습 스크립트 (CPU 스모크 테스트용, 실사용 아님)
+├── download_dataset.py  # Roboflow 데이터셋 다운로드 (API 키는 환경변수 ROBOFLOW_API_KEY). 현재 v1 데이터셋용, 미사용
+├── train.py             # 로컬 학습 스크립트 (CPU 스모크 테스트용, 실사용 아님 — 학습은 Colab)
+│                        # main.py 자리는 비워둠 — 통합 파이프라인이 생기면 그게 진입점
 ├── docs/
 │   ├── helmet_v1/       # 착용 위주 데이터셋 baseline 결과 (실패 사례)
 │   └── helmet_v2/       # 착용/미착용 2클래스 결과 (성공)
@@ -102,10 +104,10 @@ rtauto_sop/
 
 - helmet_v2 검출 모델 (재사용 가능한 핵심 자산)
 - Colab 학습 파이프라인 (다른 클래스에 재사용)
-- `main.py` — 웹캠 → 검출 → 화면 표시, **약 30줄의 데모 수준**
+- `webcam_helmet.py` / `webcam_person.py` — 웹캠 → 검출 → 화면 표시, **각 30~40줄의 데모 수준**
 - 실험 결과·한계 문서
 
-**아직 없는 것 (= 시스템 본체)**: 추적(ByteTrack), person 검출·인원 수 카운팅, 상태 집계(3초 창),
+**아직 없는 것 (= 시스템 본체)**: 추적(ByteTrack), 인원 수 집계 로직, 상태 집계(3초 창),
 SOP JSON + 규칙 판정 엔진, 편차 등급 산정, 음성 경로(STT/TTS/헤드셋), Web Push 알림, 엣지 PC 통합,
 heartbeat·판정 보류 로직.
 
@@ -132,7 +134,8 @@ SoftAP 무선망 구성이 별도로 필요하다 (며칠짜리). 바디캠 입�
 
 ```bash
 # 웹캠 추론 테스트 ('q'로 종료) — 로컬 CPU
-python main.py
+python webcam_helmet.py     # 안전모 착용/미착용
+python webcam_person.py     # 인원 수
 
 # test 이미지 일괄 추론
 python predict.py
@@ -161,10 +164,9 @@ python download_dataset.py
 ## 다음 작업 (개발_진행_계획.docx Phase 순)
 
 - [x] helmet_v2 학습 + 로컬 웹캠 테스트 평가
-- [ ] **인원 수 검출 (person)** — `yolov8n.pt` COCO 사전학습에 person 이미 있음, 학습 불필요.
-  근거리·원거리 인물 검출 확인, 겹침/화각 이탈 시 누락률 측정
-- [ ] **추적 (ByteTrack)** — `model.track(...persist=True, tracker="bytetrack.yaml")`.
-  프레임 간 ID 유지, 인원 수 떨림 흡수
+- [x] 인원 수 검출 (`webcam_person.py`) — `yolov8n.pt` COCO person, 학습 불필요. 웹캠 근접에서 안정 검출 확인
+- [ ] **추적 (ByteTrack)** — `webcam_person.py`에 `model.track(...persist=True, tracker="bytetrack.yaml")` 적용.
+  프레임 간 ID 유지, 인원 수 떨림 흡수, 원거리·겹침 조건 누락률 측정
 - [ ] helmet_v2 + person + 추적 결합 → "2인 1조" 규칙 1개 미니 데모 (3초 지속 시 위반 판정)
 - [ ] (병행) 세정기 SOP → JSON 스키마 설계
 - [ ] (제품화 시점) 검출 프레임워크 라이선스 재검토 (YOLOv8 AGPL → YOLOX/RT-DETR Apache)

@@ -1,6 +1,6 @@
 # helmet_v2 — 로컬 웹캠 테스트 평가
 
-`models/helmet_v2_best.pt` 를 웹캠 실시간 추론(`main.py`, CONF 0.5, CPU)으로 근접 조건에서 확인.
+`models/helmet_v2_best.pt` 를 웹캠 실시간 추론(`webcam_helmet.py`, 당시 `main.py`, CONF 0.5, CPU)으로 근접 조건에서 확인.
 
 > 테스트에 사용한 캡처 이미지는 인물 얼굴이 포함되어 저장/학습/활용하지 않음. 아래는 관찰 기록만.
 
