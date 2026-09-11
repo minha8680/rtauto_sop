@@ -65,11 +65,11 @@ docs/<name>/            (results.csv, results.png, confusion_matrix.png → 커�
 ```
 rtauto_sop/
 ├── webcam_helmet.py     # 안전모 착용/미착용 웹캠 테스트. MODEL_PATH=models/helmet_v2_best.pt, CONF 조정 가능
-├── webcam_person.py     # 인원 수 웹캠 테스트 (yolov8n COCO person). 다음: ByteTrack 추가
+├── webcam_person.py     # 인원 수 검출+ByteTrack 추적+"2인 1조" 규칙(3초 지속) 웹캠 데모
 ├── predict.py           # 학습 가중치로 test 이미지 일괄 추론
-├── download_dataset.py  # Roboflow 데이터셋 다운로드 (API 키는 환경변수 ROBOFLOW_API_KEY). 현재 v1 데이터셋용, 미사용
-├── train.py             # 로컬 학습 스크립트 (CPU 스모크 테스트용, 실사용 아님 — 학습은 Colab)
+├── trackers/bytetrack_person.yaml  # 저FPS(CPU)용 ByteTrack 튜닝 설정
 │                        # main.py 자리는 비워둠 — 통합 파이프라인이 생기면 그게 진입점
+│                        # download_dataset.py, train.py는 v1 실험 후 삭제됨 (미사용 코드 정리)
 ├── docs/
 │   ├── helmet_v1/       # 착용 위주 데이터셋 baseline 결과 (실패 사례)
 │   └── helmet_v2/       # 착용/미착용 2클래스 결과 (성공)
@@ -135,15 +135,14 @@ SoftAP 무선망 구성이 별도로 필요하다 (며칠짜리). 바디캠 입�
 ```bash
 # 웹캠 추론 테스트 ('q'로 종료) — 로컬 CPU
 python webcam_helmet.py     # 안전모 착용/미착용
-python webcam_person.py     # 인원 수
+python webcam_person.py     # 인원 수 + 추적 + "2인 1조" 규칙 데모
 
 # test 이미지 일괄 추론
 python predict.py
-
-# 로컬 데이터셋 다운로드 (실사용은 Colab에서)
-export ROBOFLOW_API_KEY="<본인 키>"
-python download_dataset.py
 ```
+
+데이터셋 다운로드·로컬 학습 스크립트는 없다 — **학습은 전부 Colab에서** (README.md 7절 절차 참고).
+Roboflow 다운로드가 로컬에서 다시 필요하면 그 절차를 참고해서 새로 작성.
 
 - **Roboflow API 키는 로컬 어디에도 저장돼 있지 않다.** `~/.roboflow/config.json`, `.env` 모두 없음.
   https://app.roboflow.com/settings/api 에서 Private API Key 확인. 계정 하나에 키 1개, 모든 공개

@@ -168,7 +168,7 @@ source venv/Scripts/activate      # 가상환경 활성화
 
 ```bash
 python webcam_helmet.py   # 안전모 착용/미착용 웹캠 테스트 ('q' 종료). MODEL_PATH / CONF 는 파일 상단
-python webcam_person.py   # 인원 수 웹캠 테스트 (yolov8n COCO person)
+python webcam_person.py   # 인원 수 + ByteTrack 추적 + "2인 1조" 규칙(3초 지속) 데모
 python predict.py         # test 이미지 폴더 일괄 추론 → runs/ 에 시각화 저장
 ```
 
@@ -177,13 +177,13 @@ python predict.py         # test 이미지 폴더 일괄 추론 → runs/ 에 �
 | 파일 | 용도 |
 |---|---|
 | `webcam_helmet.py` | 안전모 착용/미착용 웹캠 테스트 (기본 모델: `models/helmet_v2_best.pt`) |
-| `webcam_person.py` | 인원 수 웹캠 테스트 — 다음 단계에서 ByteTrack 추적 추가 예정 |
+| `webcam_person.py` | 인원 수 검출 + 추적 + "2인 1조" 규칙 미니 데모 |
+| `trackers/bytetrack_person.yaml` | 저FPS(로컬 CPU)용 ByteTrack 튜닝 설정 |
 | `predict.py` | 학습 가중치로 test 이미지 일괄 추론 |
-| `download_dataset.py` | (미사용) helmet_v1 데이터셋 로컬 다운로드 — v2부터는 Colab에서 |
-| `train.py` | (미사용) 로컬 CPU 스모크 테스트 — 실 학습은 Colab |
 | `docs/helmet_v1/`, `docs/helmet_v2/` | 학습 결과 지표·그래프·웹캠 테스트 평가 |
 
 > `main.py` 자리는 비워둠 — 검출·추적·규칙을 통합한 파이프라인이 생기면 그것이 진입점.
+> 데이터셋 다운로드·로컬 학습 스크립트는 없음 — 학습은 전부 Colab에서 진행 (위 절차 참고).
 
 > Roboflow YOLOv8 export의 `data.yaml`은 경로가 잘못돼 있어(`../train/images`) 절대경로
 > `path:` 키를 추가해야 학습이 됩니다. `datasets/`는 저장소에 포함되지 않습니다.
