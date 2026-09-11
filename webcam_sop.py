@@ -36,11 +36,19 @@ push_server.py(Web Push 프로토타입)를 같이 띄워두면 --push-url 로 �
 같은 유형(규칙+사람)이 다시 걸리면 반복(flapping)으로 보고 매번 알리지 않고 누적만 하다가,
 --repeat-threshold(기본 3)회에 도달하면 "N회 반복" 요약 알림 1번만 보낸다 (RepeatThrottle).
 등급별 차등 발송(중대/주의별 재발송·확인)은 아직 없음 — CLAUDE.md 알림 설계 섹션 참고.
+
+모든 위반 확정/해제는 --push-url 설정과 무관하게 events.jsonl 에 기록된다 (기획안 그림3
+"엣지 PC 저장" 대응). 규칙 종류(rule)와 상관없이 on_violation_confirmed/resolved 라는
+공통 지점을 통해서만 기록·발송하므로, 나중에 새 규칙(위험 자세 등)이 추가돼도 이 두 함수를
+그대로 호출하면 되고 로그·알림 코드를 다시 건드릴 필요가 없다. 기록된 이벤트는
+view_events.py 로 사람이 읽기 쉽게 요약해서 볼 수 있다.
 """
 
 import argparse
+import json
 import time
 from collections import Counter, deque
+from datetime import datetime
 
 import cv2
 import numpy as np
@@ -76,6 +84,8 @@ DEFAULT_ZONE_CLEAR_SEC = 3.0
 
 DEFAULT_REPEAT_COOLDOWN_MIN = 5.0  # 해제 후 이 시간(분) 안에 같은 위반이 다시 걸리면 "반복"으로 간주
 DEFAULT_REPEAT_THRESHOLD = 3       # 반복이 이 횟수에 도달하면 그때 요약 알림 1번만 발송
+
+EVENTS_LOG_PATH = "events.jsonl"   # 위반 확정/해제 이력. 알림 설정과 무관하게 항상 기록됨
 
 
 def parse_args():
@@ -118,6 +128,41 @@ def send_push(push_url, title, body):
         requests.post(push_url, json={"title": title, "body": body}, timeout=1.5)
     except Exception as e:
         print(f"[push] 알림 발송 실패: {e}")
+
+
+def log_event(kind, rule, target, detail):
+    """위반 확정/해제 이벤트를 events.jsonl 에 한 줄씩 추가한다 (JSON Lines, 사람도 grep 가능).
+    기획안 그림3 "엣지 PC 저장" 대응 — 알림(Web Push) 설정과 무관하게 항상 기록한다."""
+    entry = {
+        "ts": datetime.now().isoformat(timespec="seconds"),
+        "kind": kind,       # "confirmed" | "resolved"
+        "rule": rule,       # "crew" | "helmet" | "zone" | ...
+        "target": target,   # 사람 track ID 또는 None(crew처럼 전역인 경우)
+        "detail": detail,
+    }
+    try:
+        with open(EVENTS_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        print(f"[log] 이벤트 기록 실패: {e}")
+
+
+def on_violation_confirmed(args, throttle, rule, target, title, detail, now):
+    """위반이 새로 확정된 순간(상승 엣지)에 호출하는 공통 지점.
+    새 규칙이 추가돼도 이 함수만 호출하면 로그·알림·(나중에 클립 저장까지) 다 따라온다."""
+    log_event("confirmed", rule, target, detail)
+    if args.push_url:
+        ok, note = throttle.should_notify((rule, target), now)
+        if ok:
+            body = detail + (f" {note}" if note else "")
+            send_push(args.push_url, title, body)
+
+
+def on_violation_resolved(args, throttle, rule, target, detail, now):
+    """위반이 해제된 순간(하강 엣지)에 호출하는 공통 지점."""
+    log_event("resolved", rule, target, detail)
+    if args.push_url:
+        throttle.mark_resolved((rule, target), now)
 
 
 class RepeatThrottle:
@@ -467,8 +512,9 @@ def _run(cap, person_model, helmet_model, detector, args, zone_enabled):
     marker_memory = MarkerMemory(STALE_SEC, allow_estimate=not args.no_zone_estimate)
     prev_t = time.time()
 
-    # 알림은 "새로 위반이 걸린 순간"에만 보낸다. 해제 후 금방 다시 걸리는 반복(flapping)은
-    # RepeatThrottle이 억제 — 매번 알리지 않고 누적하다 threshold 넘으면 요약 1번만
+    # 위반 확정/해제는 항상 events.jsonl 에 기록되고, 알림은 그중 "새로 걸린 순간"에만 보낸다.
+    # 해제 후 금방 다시 걸리는 반복(flapping)은 RepeatThrottle이 억제 — 매번 알리지 않고
+    # 누적하다 threshold 넘으면 요약 1번만
     prev_crew_violation = False
     prev_helmet_violation_ids = set()
     prev_zone_violation_ids = set()
@@ -543,35 +589,31 @@ def _run(cap, person_model, helmet_model, detector, args, zone_enabled):
         else:
             crew_banner, crew_rgb = f"감시 중 (인원 {stable_count})", (200, 130, 0)
 
-        if args.push_url:
-            # 상승 엣지(새로 걸림) -> 쓰로틀에 물어보고 허락하면 발송
-            if crew_violation and not prev_crew_violation:
-                ok, note = repeat_throttle.should_notify(("crew", None), now)
-                if ok:
-                    body = f"{args.crew}인 1조 위반" + (f" {note}" if note else "")
-                    send_push(args.push_url, "중대 편차 발생", body)
-            for pid in helmet_violation_ids - prev_helmet_violation_ids:
-                ok, note = repeat_throttle.should_notify(("helmet", pid), now)
-                if ok:
-                    body = f"작업자 ID{pid} 미착용 지속" + (f" {note}" if note else "")
-                    send_push(args.push_url, "보호구 미착용", body)
-            for pid in zone_violation_ids - prev_zone_violation_ids:
-                ok, note = repeat_throttle.should_notify(("zone", pid), now)
-                if ok:
-                    body = f"작업자 ID{pid} 구역 내 위치" + (f" {note}" if note else "")
-                    send_push(args.push_url, "안전구역 침범", body)
+        # 위반 확정/해제는 알림 설정과 무관하게 항상 이벤트 로그에 남는다 (on_violation_* 내부에서
+        # push_url 있을 때만 실제 발송까지 함). 새 규칙이 추가돼도 이 호출 패턴만 따라가면 된다.
+        if crew_violation and not prev_crew_violation:
+            on_violation_confirmed(args, repeat_throttle, "crew", None,
+                                    "중대 편차 발생", f"{args.crew}인 1조 위반", now)
+        for pid in helmet_violation_ids - prev_helmet_violation_ids:
+            on_violation_confirmed(args, repeat_throttle, "helmet", pid,
+                                    "보호구 미착용", f"작업자 ID{pid} 미착용 지속", now)
+        for pid in zone_violation_ids - prev_zone_violation_ids:
+            on_violation_confirmed(args, repeat_throttle, "zone", pid,
+                                    "안전구역 침범", f"작업자 ID{pid} 구역 내 위치", now)
 
-            # 하강 엣지(해제됨) -> 다음 재발이 "반복"인지 판단할 기준 시각 기록
-            if prev_crew_violation and not crew_violation:
-                repeat_throttle.mark_resolved(("crew", None), now)
-            for pid in prev_helmet_violation_ids - helmet_violation_ids:
-                repeat_throttle.mark_resolved(("helmet", pid), now)
-            for pid in prev_zone_violation_ids - zone_violation_ids:
-                repeat_throttle.mark_resolved(("zone", pid), now)
+        if prev_crew_violation and not crew_violation:
+            on_violation_resolved(args, repeat_throttle, "crew", None,
+                                   f"{args.crew}인 1조 위반 해제", now)
+        for pid in prev_helmet_violation_ids - helmet_violation_ids:
+            on_violation_resolved(args, repeat_throttle, "helmet", pid,
+                                   f"작업자 ID{pid} 착용 복귀", now)
+        for pid in prev_zone_violation_ids - zone_violation_ids:
+            on_violation_resolved(args, repeat_throttle, "zone", pid,
+                                   f"작업자 ID{pid} 구역 밖 복귀", now)
 
-            prev_crew_violation = crew_violation
-            prev_helmet_violation_ids = set(helmet_violation_ids)
-            prev_zone_violation_ids = set(zone_violation_ids)
+        prev_crew_violation = crew_violation
+        prev_helmet_violation_ids = set(helmet_violation_ids)
+        prev_zone_violation_ids = set(zone_violation_ids)
 
         annotated = draw_overlay(
             frame, zone_poly_i, zone_corner_status, marker_ids_seen, person_items,

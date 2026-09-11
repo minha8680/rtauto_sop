@@ -110,7 +110,11 @@ rtauto_sop/
 ├── webcam_sop.py        # ★ 메인 통합 데모 (= 감시단원 채널 처리기)
 │                        #   person+helmet_v2+ArUco 구역을 한 루프에서. 3규칙:
 │                        #   N인1조(3초) / 보호구 미착용(10초) / 안전구역 침범(3초)
-│                        #   --crew, --*-hold, --no-zone, --push-url 로 파라미터화
+│                        #   --crew, --*-hold, --no-zone, --push-url 로 파라미터화.
+│                        #   위반 확정/해제는 on_violation_confirmed/resolved 공통 지점을
+│                        #   거쳐 events.jsonl 기록 + (설정 시) 알림 발송 — 새 규칙 추가돼도
+│                        #   이 두 함수만 호출하면 로그·알림이 자동으로 따라옴
+├── view_events.py       # events.jsonl을 사람이 읽기 좋게(확정↔해제 짝짓고 지속시간까지) 출력
 ├── push_server.py       # Web Push 알림 프로토타입 서버(FastAPI). 구독 페이지 + /notify
 ├── generate_vapid_keys.py  # Web Push용 VAPID 키 생성 (최초 1회)
 ├── generate_markers.py  # ArUco 마커 4장(TL/TR/BR/BL) 생성 → markers/
@@ -134,13 +138,14 @@ rtauto_sop/
 ├── vapid_private_key.pem            # .gitignore(*.pem) — Web Push 서명 키, 비공개
 ├── vapid_public_key.txt             # .gitignore — 구독용 공개 키
 ├── push_subscriptions.json          # .gitignore — 구독자 엔드포인트(개인 기기 토큰)
-├── 개발_진행_계획.docx               # .gitignore(*.docx) — 전체 로드맵
+├── events.jsonl                     # .gitignore — 위반 확정/해제 이력 (런타임 로그)
+├── 개발_진행_일지.docx               # .gitignore(*.docx) — 날짜순 개발 기록 (로컬 전용)
 ├── README.md
 └── CLAUDE.md
 ```
 
 `.gitignore`: `venv/`, `*.pt`, `datasets/`, `runs/`, `.env`, `*.pem`, `vapid_public_key.txt`,
-`push_subscriptions.json`, `*.docx`, `*.pdf`, `.idea/`, `.vscode/`
+`push_subscriptions.json`, `events.jsonl`, `*.docx`, `*.pdf`, `.idea/`, `.vscode/`
 
 ## 학습한 모델
 
@@ -164,7 +169,10 @@ rtauto_sop/
 - person 검출 + ByteTrack 추적 + 공간 매칭(helmet↔person) + `SustainedLatch` 규칙 패턴
   (지속시간 확정/해제, 재사용되는 핵심 로직)
 - ArUco 마커로 "카메라가 움직여도 구역을 다시 찾는" 방식 — 웹캠에서 동작 검증됨
-- Web Push 알림 프로토타입 — 구독 → 위반 확정 시 실제 브라우저 알림까지 경로 검증됨
+- Web Push 알림 프로토타입 — 구독 → 위반 확정 시 실제 브라우저 알림까지 경로 검증됨,
+  반복(flapping) 억제까지 구현
+- 이벤트 로그(`events.jsonl` + `view_events.py`) — 알림 설정과 무관하게 위반 확정/해제
+  전부 기록. `on_violation_confirmed/resolved` 공통 지점 덕에 새 규칙 추가해도 재사용됨
 - 실험 결과·한계 문서
 
 **아직 없는 것 (= 시스템 본체)**:
@@ -241,6 +249,10 @@ python generate_vapid_keys.py                     # 최초 1회
 uvicorn push_server:app --port 8000               # 터미널 1: 알림 서버 (localhost:8000 접속해 구독)
 python webcam_sop.py --push-url http://localhost:8000/notify   # 터미널 2
 
+# 위반 이력 확인 (webcam_sop.py 실행 중/후 아무 때나, --push-url 없어도 기록됨)
+python view_events.py                # 전체
+python view_events.py --rule zone --today
+
 # 단일 기능 검증용 (통합본 문제 생겼을 때 원인 분리에 유용)
 python webcam_helmet.py     # 안전모만
 python webcam_person.py     # 인원 수 + 추적만
@@ -288,6 +300,14 @@ Roboflow 다운로드가 로컬에서 다시 필요하면 그 절차를 참고�
   STEP 소요시간, 규칙 판정 엔진 착수 가능. **현재 최대 병목.** 스키마는 실측 데이터
   나오기 전에 미리 설계하지 않기로 함(추측성 설계 지양, 2026-09-11 판단)
 - [x] 알림 반복 억제 (`RepeatThrottle`) — `--repeat-cooldown-min`/`--repeat-threshold`
+- [x] 이벤트 로그 (`events.jsonl`, `view_events.py`) — `on_violation_confirmed/resolved`
+  공통 지점으로 리팩터링, 알림 설정과 무관하게 항상 기록
+- [ ] 위험 자세 검출 — 표1 위험요인의 나머지 하나(안전구역은 완료). SOP·하드웨어 무관,
+  COCO pose estimation(학습 불필요)으로 착수 가능. 감시단원 채널 마지막 빈칸
+- [ ] 음성 경로 PoC — 마이크→VAD→faster-whisper STT→키워드 의도 분류→TTS 응답. SOP 내용
+  없이도 뼈대는 검증 가능(SOP 조회 부분만 가짜 응답으로). 블루투스 헤드셋 대신 PC 마이크/스피커
+- [ ] 경보 구간 클립 저장 — 그림4 "10초 클립 자동 첨부" 대응. 순환 프레임 버퍼 + 위반 확정
+  시 저장. `on_violation_confirmed`에 이미 꽂을 자리 있음
 - [ ] (선택) 알림 등급별 차등 발송 — 위 "알림 설계" 섹션 참고. 서버 쪽 스케줄러·ACK까지
   필요해 규모가 큼, 지금 급하지 않음
 - [ ] (장비 입고 후) RTSP 2채널 수신 + 현장 재튜닝 + GPU 동시 부하 검증

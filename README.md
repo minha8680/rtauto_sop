@@ -203,6 +203,9 @@ python webcam_sop.py --push-url http://localhost:8000/notify   # 터미널 2
 매번 알리지 않고 누적하다가 3회째에 "N회 반복" 요약 알림 1번만 보냅니다
 (`--repeat-cooldown-min`, `--repeat-threshold`로 조정).
 
+위반 확정/해제는 **알림 설정과 무관하게** `events.jsonl`에 항상 기록됩니다(기획안 그림3
+"엣지 PC 저장" 대응). `python view_events.py`로 확정↔해제를 짝지어 지속시간까지 보여줍니다.
+
 그래도 프로토타입 수준입니다 — localhost 전용(HTTPS 없음), 구독 정보는 JSON 파일 저장, 30초
 재발송·확인(ACK)·등급별 차등 발송은 미구현.
 
@@ -257,6 +260,9 @@ python generate_vapid_keys.py                 # 최초 1회
 uvicorn push_server:app --port 8000           # 터미널 1 → 브라우저로 localhost:8000 접속해 구독
 python webcam_sop.py --push-url http://localhost:8000/notify   # 터미널 2
 
+# 위반 이력 확인 (--push-url 없어도 항상 기록됨)
+python view_events.py
+
 # 단일 기능 검증용 (문제 생겼을 때 원인 분리에 유용)
 python webcam_helmet.py     # 안전모만
 python webcam_person.py     # 인원 수 + 추적만
@@ -272,6 +278,7 @@ python predict.py           # test 이미지 폴더 일괄 추론 → runs/ 에 
 | **`webcam_sop.py`** | **메인 통합 데모** — 감시단원 채널 3규칙(N인 1조 + 보호구 + 안전구역) |
 | `push_server.py` | Web Push 알림 프로토타입 서버 (FastAPI, 구독 페이지 + `/notify`) |
 | `generate_vapid_keys.py` | Web Push용 VAPID 키 생성 (최초 1회) |
+| `view_events.py` | `events.jsonl`(위반 이력)을 확정↔해제 짝지어 읽기 좋게 출력 |
 | `generate_markers.py`, `markers/` | 안전구역용 ArUco 마커 생성/보관 |
 | `trackers/bytetrack_person.yaml` | 저FPS(로컬 CPU)용 ByteTrack 튜닝 설정 |
 | `requirements.txt` | 로컬 실행 환경 (학습은 Colab이라 무관) |

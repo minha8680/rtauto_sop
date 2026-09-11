@@ -17,6 +17,9 @@ runs/
 vapid_public_key.txt
 push_subscriptions.json
 
+# 런타임 로그
+events.jsonl
+
 # 사내 문서 (public 저장소이므로 제외)
 *.docx
 *.pdf
