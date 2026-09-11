@@ -10,10 +10,12 @@
 
 - 작성자: 신민하 (알티자동화)
 - 저장소: https://github.com/minha8680/rtauto_sop (**public**)
-- 현재 단계: helmet_v2 + person 검출·추적(ByteTrack) + "N인 1조"·보호구 미착용 규칙 통합
-  데모(`webcam_sop.py`) 완료. **안전구역 침범은 ArUco 마커 기반 PoC 단계**(`webcam_zone.py`,
-  웹캠 검증만, 현장 미검증). 다음은 SOP 문서화 착수 또는 안전구역 PoC 현장성 보강.
-- 전체 로드맵: `개발_진행_계획.docx` (gitignore, 로컬 전용) — Phase 1~8
+- 현재 단계: **감시단원 카메라 채널의 3개 판정 항목(N인 1조 / 보호구 착용 / 안전구역 침범)을
+  `webcam_sop.py` 하나로 통합 완료** + Web Push 알림 프로토타입(`push_server.py`) 동작 확인.
+  작업자 카메라 채널(항목·순서, 급소포인트)은 **SOP 문서가 없어 착수 불가**. 다음은 SOP 문서화.
+- 기획안 원문(PDF/DOCX)은 사용자 바탕화면에 있고 저장소에는 없다(`*.docx`/`*.pdf` gitignore).
+  안전구역 설정 방식은 기획안에 없던 내용이라 "5.7 안전구역 설정 방식" 절을 추가한
+  사본을 만들어 둠: `바탕화면/장비_구매_기획안_1안_최종본_안전구역설정방식추가.docx`
 
 ### 전체 시스템에서 이 저장소의 위치
 
@@ -29,6 +31,38 @@
   기본 라이선스) 상용 배포 제약을 피하는 게 목표. 현재 실험 코드는 `ultralytics`를 쓰지만,
   실제 제품 통합 시 모델 프레임워크는 재검토 대상.
 
+### 카메라 2채널 — 항목별 담당이 다르다 (중요)
+
+기획안 표 1 기준. **지금 구현된 건 전부 감시단원 채널이다.** 새 기능을 붙일 때 "이게 어느
+카메라 항목인지" 먼저 확인할 것.
+
+| SOP 항목 | 판정 항목 | 담당 카메라 | 현재 |
+|---|---|---|---|
+| 안전관리대책 | N인 1조 인원 수 | **감시단원** (2~4m) | ✅ `webcam_sop.py` |
+| 안전관리대책 | 보호구 착용 | **감시단원** (2~4m) | ✅ `webcam_sop.py` |
+| 위험요인 | 안전구역 침범 | **감시단원** (광역) | ✅ `webcam_sop.py` (PoC) |
+| 위험요인 | 위험 자세(사다리 끝단) | **감시단원** (광역) | ❌ |
+| 항목·순서 | 단계 순서 위반·누락 | **작업자** (근접) | ❌ SOP 필요 |
+| 급소포인트 | 필수 동작 누락·확인 생략 | **작업자** (0.8m 이내) | ❌ SOP 필요 |
+| STEP별 작업시간 | 표준시간 초과·과속 | 양 카메라 공통 | ❌ SOP 필요 |
+
+즉 `webcam_sop.py` = 사실상 **"감시단원 채널 처리기"**. 나중에 작업자 채널이 생기면 구조를
+이렇게 나눠야 한다(단순히 같은 스크립트를 두 번 돌리는 게 아님 — 채널마다 보는 항목과 모델이 다름):
+
+```
+채널 A (작업자캠, 근접)   → 손동작·공구·부품 검출 → 단계 순서·급소포인트 판정 ─┐
+                                                                              ├→ SOP 상태 기계 → 편차 확정 → 출력
+채널 B (감시단원캠, 광역) → person·helmet·구역 검출 → 인원수·보호구·구역 판정 ─┘
+                            (= 지금 webcam_sop.py)
+```
+
+리팩터링 방향: 지금은 "검출→판정→화면표시"가 한 덩어리라, 나중에 **판정부(SustainedLatch
+규칙들)를 채널 처리기에서 떼어내 공통 엔진으로** 옮겨야 한다.
+
+**다행인 점**: 다중 카메라에서 제일 어려운 cross-camera re-ID("A캠 1번 = B캠 3번")는 **안 해도
+될 가능성이 높다**. 인원 수는 감시단원 캠만, 단계 순서는 작업자 캠만 보고, 유일한 공통 항목인
+STEP 소요시간도 체류시간 기반이라 각 채널이 독립 측정 가능하기 때문.
+
 ## 환경
 
 - **OS**: Windows 10, 주 셸은 **Git Bash (MINGW64)**. PowerShell 아님 — 명령을 안내할 때
@@ -40,8 +74,12 @@
 - **디스크 여유가 적다** (C: ~10GB 대). CUDA torch(~5GB)는 로컬에 설치 시도하다 실패한 이력 있음.
   `pip install` 시 `--no-cache-dir` 를 붙일 것 (pip 캐시가 메모리/디스크를 터뜨린 적 있음).
 - Python 패키지는 `venv/`에 설치됨. `requirements.txt`는 아직 없음(만들면 유용).
-  설치돼 있는 주요 패키지: `ultralytics`, `torch(cpu)`, `opencv-python`(headless 아님), `roboflow`, `python-docx`.
+  설치돼 있는 주요 패키지: `ultralytics`, `torch(cpu)`, `opencv-python`(headless 아님), `roboflow`,
+  `python-docx`, `lap`(ByteTrack용), `fastapi`+`uvicorn`+`pywebpush`(Web Push 프로토타입용), `requests`.
   - `opencv-python-headless`가 딸려 들어오면 `cv2.imshow`가 안 된다. headless 제거 후 `opencv-python` 재설치.
+  - 콘솔이 **cp949**라 `print()`에 em-dash(—) 같은 비-cp949 문자를 넣으면 `UnicodeEncodeError`가 난다.
+    스크립트 출력문엔 일반 하이픈을 쓸 것. 파일 읽기/쓰기는 항상 `encoding="utf-8"` 명시.
+  - 한글 파일명을 bash 명령줄로 넘기면 깨진다. 한글 경로가 필요한 작업은 .py 파일로 작성해서 실행할 것.
 
 ## 학습 워크플로 (중요)
 
@@ -66,32 +104,39 @@ docs/<name>/            (results.csv, results.png, confusion_matrix.png → 커�
 
 ```
 rtauto_sop/
-├── webcam_helmet.py     # 안전모 착용/미착용 웹캠 테스트. MODEL_PATH=models/helmet_v2_best.pt, CONF 조정 가능
-├── webcam_person.py     # 인원 수 검출+ByteTrack 추적+"2인 1조" 규칙(3초 지속) 웹캠 데모
-├── webcam_sop.py        # person+helmet_v2 통합 데모. 공간 매칭으로 "헬멧 검출=착용" 문제 해결,
-│                        # N인 1조(기본 3초)+보호구 미착용(기본 10초) 규칙. --crew 등 인자로 파라미터화
-├── webcam_zone.py       # 안전구역 침범 PoC. ArUco 마커 4개로 구역을 매 프레임 재계산
-│                        # (착용형 카메라가 움직여도 화면 고정 폴리곤이 안 통하는 문제 해결)
-├── generate_markers.py  # webcam_zone.py용 ArUco 마커 4장(TL/TR/BR/BL) 생성 → markers/
-├── markers/              # 생성된 마커 PNG (프린트해서 테스트 구역 모서리에 배치)
-├── predict.py           # 학습 가중치로 test 이미지 일괄 추론
+├── webcam_sop.py        # ★ 메인 통합 데모 (= 감시단원 채널 처리기)
+│                        #   person+helmet_v2+ArUco 구역을 한 루프에서. 3규칙:
+│                        #   N인1조(3초) / 보호구 미착용(10초) / 안전구역 침범(3초)
+│                        #   --crew, --*-hold, --no-zone, --push-url 로 파라미터화
+├── push_server.py       # Web Push 알림 프로토타입 서버(FastAPI). 구독 페이지 + /notify
+├── generate_vapid_keys.py  # Web Push용 VAPID 키 생성 (최초 1회)
+├── generate_markers.py  # ArUco 마커 4장(TL/TR/BR/BL) 생성 → markers/
+├── markers/             # 생성된 마커 PNG (프린트해서 구역 네 모서리에 배치)
 ├── trackers/bytetrack_person.yaml  # 저FPS(CPU)용 ByteTrack 튜닝 설정
-│                        # main.py 자리는 비워둠 — 통합 파이프라인이 생기면 그게 진입점
-│                        # download_dataset.py, train.py는 v1 실험 후 삭제됨 (미사용 코드 정리)
+│
+│   ── 아래는 단계별 검증용으로 남겨둔 단일 기능 스크립트 (통합본은 webcam_sop.py) ──
+├── webcam_helmet.py     # 안전모 착용/미착용만
+├── webcam_person.py     # 인원 수+추적+2인1조 규칙만
+├── webcam_zone.py       # 안전구역 침범만 (MarkerMemory 원본 구현)
+├── debug_aruco.py       # 마커 인식 자체만 진단 (코드 vs 조명/거리 문제 분리용)
+├── predict.py           # 학습 가중치로 test 이미지 일괄 추론
+│                        # main.py 자리는 비워둠 — 2채널 통합 파이프라인이 생기면 그게 진입점
 ├── docs/
 │   ├── helmet_v1/       # 착용 위주 데이터셋 baseline 결과 (실패 사례)
-│   └── helmet_v2/       # 착용/미착용 2클래스 결과 (성공)
+│   └── helmet_v2/       # 착용/미착용 2클래스 결과 (성공) + webcam_test.md
 ├── models/              # .gitignore(*.pt) — helmet_v1_best.pt, helmet_v2_best.pt (로컬 전용)
-├── datasets/            # .gitignore — 커밋 안 됨
-├── runs/                # .gitignore — 로컬 학습 결과물
-├── venv/                # .gitignore
-├── yolov8n.pt           # 사전학습 가중치 (*.pt로 제외)
-├── 개발_진행_계획.docx    # .gitignore(*.docx) — 전체 로드맵
+├── datasets/, runs/, venv/          # .gitignore
+├── yolov8n.pt                        # 사전학습 가중치 (*.pt로 제외)
+├── vapid_private_key.pem            # .gitignore(*.pem) — Web Push 서명 키, 비공개
+├── vapid_public_key.txt             # .gitignore — 구독용 공개 키
+├── push_subscriptions.json          # .gitignore — 구독자 엔드포인트(개인 기기 토큰)
+├── 개발_진행_계획.docx               # .gitignore(*.docx) — 전체 로드맵
 ├── README.md
 └── CLAUDE.md
 ```
 
-`.gitignore`: `venv/`, `*.pt`, `datasets/`, `runs/`, `.env`, `*.docx`, `*.pdf`, `.idea/`, `.vscode/`
+`.gitignore`: `venv/`, `*.pt`, `datasets/`, `runs/`, `.env`, `*.pem`, `vapid_public_key.txt`,
+`push_subscriptions.json`, `*.docx`, `*.pdf`, `.idea/`, `.vscode/`
 
 ## 학습한 모델
 
@@ -107,20 +152,23 @@ rtauto_sop/
 
 ## 프로젝트 완성도 (현실 체크)
 
-**완료**: 개발_진행_계획.docx Phase 1(검출 모델)의 안전모 항목 + Phase 2(인원 수 검출·추적)
-+ 그 둘을 결합한 규칙 미니 데모(`webcam_sop.py`: N인 1조 + 보호구 미착용). 안전구역 침범은
-알고리즘 **개념 검증(PoC)** 까지 — `webcam_zone.py`. 실제로 있는 것:
+**완료**: **감시단원 카메라 채널의 판정 항목 3개 전부**(N인 1조 / 보호구 착용 / 안전구역 침범)를
+`webcam_sop.py` 하나로 통합. 안전구역은 알고리즘 **개념 검증(PoC)** 수준. 실제로 있는 것:
 
 - helmet_v2 검출 모델 (재사용 가능한 핵심 자산)
 - Colab 학습 파이프라인 (다른 클래스에 재사용)
 - person 검출 + ByteTrack 추적 + 공간 매칭(helmet↔person) + `SustainedLatch` 규칙 패턴
   (지속시간 확정/해제, 재사용되는 핵심 로직)
 - ArUco 마커로 "카메라가 움직여도 구역을 다시 찾는" 방식 — 웹캠에서 동작 검증됨
+- Web Push 알림 프로토타입 — 구독 → 위반 확정 시 실제 브라우저 알림까지 경로 검증됨
 - 실험 결과·한계 문서
 
-**아직 없는 것 (= 시스템 본체)**: SOP JSON + 규칙 판정 엔진(사람이 만든 SOP 문서 자체가 아직
-없음), 편차 등급 산정, 음성 경로(STT/TTS/헤드셋), Web Push 알림, 엣지 PC 통합, heartbeat 로직,
-항목·순서/급소포인트/STEP 소요시간(SOP 있어야 가능), 작업 세션(근무시간) 게이팅, 알림 반복 억제.
+**아직 없는 것 (= 시스템 본체)**:
+- **작업자 카메라 채널 전체** (항목·순서, 급소포인트) — SOP 문서가 없어 착수 불가
+- SOP JSON + 규칙 판정 엔진, STEP 소요시간 — 마찬가지로 SOP 문서가 선행 조건
+- 2채널 동시 수신·통합 구조 (지금은 단일 카메라 전제)
+- 편차 등급(중대/주의/일반) 차등 발송, 알림 반복 억제, 작업 세션(근무시간) 게이팅
+- 음성 경로(STT/TTS/헤드셋), 엣지 PC 통합, heartbeat 로직, 위험 자세 검출
 
 **바디캠이 와도 "꽂으면 시스템이 돈다"가 아니다.** `cv2.VideoCapture(0)` → `VideoCapture("rtsp://…")`
 한 줄 변경 자체는 쉽지만, RTSP는 버퍼링·지연 관리, 끊김 재연결, 2채널 동시 수신, 3fps 다운샘플링,
@@ -136,6 +184,30 @@ SoftAP 무선망 구성이 별도로 필요하다 (며칠짜리). 바디캠 입�
 person/helmet 박스의 공간 관계(박스 안에 중심점 포함)로 이미 해결함 — 새로 만들 때 이 로직
 재사용할 것.
 
+**Web Push 프로토타입도 "완성"이 아니다.** localhost 전용(HTTPS 없음)이라 실제 휴대폰에서 받으려면
+인증서가 필요하고, 구독 정보는 JSON 파일에 저장(실제론 DB), 기획안 5.5절의 30초 재발송·확인(ACK)
+처리·등급별 차등 발송은 미구현.
+
+- **PC 브라우저(localhost:8000)로 구독→발송→수신 전 경로 검증 완료.** 로직 자체는 정상 동작.
+- **휴대폰 실제 수신은 미검증** — 시도했으나 막힘: LAN IP(`http://<PC IP>:8000`)는 HTTPS가
+  아니라 브라우저가 Push API를 숨겨서 "미지원"으로 보임. 우회하려던 `chrome://flags`의
+  insecure-origin 허용도 관리자 휴대폰이 MDM 관리 기기라 접근 자체가 막혀 있었음.
+- **다음에 폰으로 확인하려면**: (a) ngrok 등으로 임시 HTTPS 터널 (인터넷 노출 — 진행 전 확인
+  필요), (b) 회사 관리 안 받는 개인 폰으로 시도, (c) 엣지 PC에 실제 HTTPS 인증서 붙을 때 같이
+  검증(가장 실전에 가까움, 장비 입고 후).
+
+### 알림 설계 — 나중에 반영할 논의 결과 (오탐 피로 방지)
+
+관리자에게 알림이 너무 자주 가면 신뢰를 잃는다(alarm fatigue). 다음이 필요하다는 결론이 났으나
+전부 미구현:
+1. **등급별 차등 발송** — 기획안 그림 4 목업에 이미 중대/일반/주의 3등급이 있음. 중대(2인1조)만
+   30초 재발송, 주의(보호구)는 1회, 일반(표준시간 초과)은 이벤트 목록에만 기록
+2. **반복(flapping) 억제** — 해제 후 N분 내 같은 유형 재발생 시 새 알림 대신 누적 카운트,
+   임계 초과 시 "반복 발생" 요약 1회 (Phase 6 알림 시스템 만들 때 같이 구현)
+3. **작업 세션 게이팅** — 점심·교대 시간엔 규칙 평가 자체를 끔. 카메라를 물리적으로 끄는 건
+   비추천(수동 의존·영상 공백). 고정 시간표로 시작 → SOP 엔진 완성 후 자동 감지로 전환
+4. **오탐 신고 → 튜닝 데이터 축적** — 이벤트 DB 스키마에 "확인/오탐" 필드를 미리 넣어둘 것
+
 ## 데이터셋 주의사항
 
 - **Roboflow YOLOv8 export의 data.yaml 경로 버그**: 원본이 `train: ../train/images` 처럼
@@ -150,15 +222,23 @@ person/helmet 박스의 공간 관계(박스 안에 중심점 포함)로 이미 
 ## 자주 쓰는 명령 (Git Bash, venv 활성 상태)
 
 ```bash
-# 웹캠 추론 테스트 ('q'로 종료) — 로컬 CPU
-python webcam_helmet.py     # 안전모 착용/미착용
-python webcam_person.py     # 인원 수 + 추적 + "2인 1조" 규칙 데모
-python webcam_sop.py        # person+helmet 통합. --crew N 으로 N인 1조 등 파라미터 변경 (--help 참고)
-python webcam_zone.py       # 안전구역 침범 PoC. markers/ 프린트해서 구역 네 모서리에 배치 후 실행
-python generate_markers.py  # webcam_zone.py용 ArUco 마커 재생성
+# ★ 메인: 감시단원 채널 통합 데모 ('q'로 종료) — 로컬 CPU
+python webcam_sop.py                    # 3규칙 전부 (마커 준비됐을 때)
+python webcam_sop.py --no-zone           # 마커 없으면 안전구역만 끄고 실행
+python webcam_sop.py --crew 3 --zone-hold 5      # 파라미터 조정 (--help 참고)
 
-# test 이미지 일괄 추론
-python predict.py
+# Web Push 알림 연동 (터미널 2개 필요)
+python generate_vapid_keys.py                     # 최초 1회
+uvicorn push_server:app --port 8000               # 터미널 1: 알림 서버 (localhost:8000 접속해 구독)
+python webcam_sop.py --push-url http://localhost:8000/notify   # 터미널 2
+
+# 단일 기능 검증용 (통합본 문제 생겼을 때 원인 분리에 유용)
+python webcam_helmet.py     # 안전모만
+python webcam_person.py     # 인원 수 + 추적만
+python webcam_zone.py       # 안전구역만
+python debug_aruco.py       # 마커 인식되는지만 (조명/거리/인쇄 문제 진단)
+python generate_markers.py  # ArUco 마커 재생성
+python predict.py           # test 이미지 일괄 추론
 ```
 
 데이터셋 다운로드·로컬 학습 스크립트는 없다 — **학습은 전부 Colab에서** (README.md 7절 절차 참고).
@@ -171,7 +251,8 @@ Roboflow 다운로드가 로컬에서 다시 필요하면 그 절차를 참고�
 ## 컨벤션
 
 - **커밋 메시지: 한국어**. 제목 한 줄 + 필요 시 본문 불릿.
-- 커밋 마지막에 `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>` 유지.
+- 커밋 마지막에 `Co-Authored-By: Claude <모델명> <noreply@anthropic.com>` 유지
+  (모델명은 그 세션에서 실제 작업한 모델로 — 하네스가 알려주는 값을 쓸 것).
 - git 사용자 이메일이 `minha8680@naver.com`으로 설정됨 (GitHub 계정 minha8680, 알림용 이메일은 gmail).
 - 커밋/푸시는 **사용자가 요청할 때만**. 사용자가 직접 파일을 작성해보며 진행하는 방식을
   선호하므로, 요청 없이 파일을 미리 만들어두지 말 것. "자동으로 해줘" 요청이 오면 그때 작성.
@@ -183,12 +264,16 @@ Roboflow 다운로드가 로컬에서 다시 필요하면 그 절차를 참고�
 ## 다음 작업 (개발_진행_계획.docx Phase 순)
 
 - [x] helmet_v2 학습 + 로컬 웹캠 테스트 평가
-- [x] 인원 수 검출 + ByteTrack 추적 (`webcam_person.py`)
-- [x] "N인 1조" 규칙 + 보호구 미착용 규칙 통합 (`webcam_sop.py`, `--crew` 등으로 파라미터화)
-- [x] 안전구역 침범 — ArUco 마커 기반 **개념 검증**(`webcam_zone.py`). 실전 적용 전 마커 재질·
-  인식거리 실측, 부분 가림 대응 로직 보강 필요 (완성도 섹션 참고)
+- [x] 인원 수 검출 + ByteTrack 추적
+- [x] "N인 1조" + 보호구 미착용 규칙 (`--crew` 등으로 파라미터화)
+- [x] 안전구역 침범 — ArUco 마커 기반 **개념 검증**. 마커 재질·인식거리 실측, 부분 가림 대응은 미완
+- [x] 위 3규칙을 `webcam_sop.py` 하나로 통합 (= 감시단원 채널 완성)
+- [x] Web Push 알림 프로토타입 — 구독 → 위반 시 실제 알림 도달 확인 (`--push-url`)
 - [ ] **세정기 SOP 문서 작성 → JSON 스키마 설계** — 코드 작업 아님, 현장 관찰 필요. 이게 있어야
-  항목·순서/급소포인트/STEP 소요시간 항목과 실제 규칙 판정 엔진(Phase 4) 착수 가능. 현재 최대 병목
-- [ ] (선택, SOP 없이도 가능) 안전구역 PoC 보강 — 마커 3개만 보여도 추정, 실내 다른 거리에서 인식 테스트
-- [ ] (선택) Web Push 알림 프로토타입 — FastAPI + 브라우저 구독으로 실제 폰 알림 수신 검증 (Phase 6 일부 선행)
+  작업자 채널(항목·순서/급소포인트)과 STEP 소요시간, 규칙 판정 엔진(Phase 4) 착수 가능.
+  **현재 최대 병목.** 현장 가기 전 "관찰 체크리스트 + JSON 스키마 초안"을 먼저 만들어두면 효율적
+- [ ] (선택, SOP 없이도 가능) 안전구역 PoC 보강 — 마커 3개만 보여도 기하학적으로 4번째 추정
+- [ ] (선택) 알림 고도화 — 등급별 차등 발송, 반복 억제 (위 "알림 설계" 섹션 참고. 실제 알림
+  채널이 있어야 의미 있으므로 Phase 6에서 같이)
+- [ ] (장비 입고 후) RTSP 2채널 수신 + 현장 재튜닝 + GPU 동시 부하 검증
 - [ ] (제품화 시점) 검출 프레임워크 라이선스 재검토 (YOLOv8 AGPL → YOLOX/RT-DETR Apache)
