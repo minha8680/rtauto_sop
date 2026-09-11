@@ -8,10 +8,22 @@
 준비: generate_markers.py 로 만든 4장(ID 0~3, TL/TR/BR/BL)을 프린트해서
 테스트할 구역의 네 모서리에 시계 방향으로 놓는다.
 
+착용형 카메라(바디캠) 특유의 문제: 몸통 방향은 보통 지켜보는 대상을 향하지만,
+호흡·발걸음 같은 미세한 흔들림만으로도 "이번 프레임에 마커 4개가 동시에" 조건이
+깨지기 쉽다. 그래서 마커를 "이번 프레임에 보였는가"가 아니라 "최근 STALE_SEC
+초 안에 한 번이라도 보였는가"로 판단한다 (MarkerMemory) — 짧은 순간 가려지거나
+살짝 흔들려도 최근 위치를 그대로 써서 구역을 유지한다.
+
+주의: 이 방식은 카메라가 그 짧은 시간 동안 "미세하게만" 움직였다는 전제다.
+사람이 실제로 몸을 크게 홱 돌리면 직전 위치가 더 이상 맞지 않아 구역이 잘못
+그려질 수 있다 — STALE_SEC를 너무 길게 잡지 않는 이유. 근본적으로 더 정확히
+하려면(예: 3개만 보여도 기하학적으로 4번째 추정) 추가 보강이 필요하다.
+
 한계 (개념 검증 수준, 실전 적용 전 별도 작업 필요):
-  - 마커 4개가 전부 보여야 구역을 인식한다 (부분 가림 대응은 다음 단계)
+  - 같은 프레임이 아니라 "최근 봤음"으로 완화했지만, 그래도 4개 다 최근에 봤어야 함
+    (3개만 있을 때 기하학적으로 추정하는 건 아직 없음)
   - 종이 마커는 실내 테스트용. 현장은 방수·내구성 있는 재질로 별도 제작 필요
-  - 지속시간(HOLD/CLEAR)은 임시값. 현장 실측 후 조정
+  - 지속시간(HOLD/CLEAR, STALE_SEC)은 임시값. 현장 실측 후 조정
 """
 
 import time
@@ -34,6 +46,9 @@ ZONE_MARKER_ORDER = [0, 1, 2, 3]   # TL, TR, BR, BL 순서 (generate_markers.py�
 SMOOTH_SEC = 0.5
 ZONE_HOLD_SEC = 3.0    # 구역 침범 확정 지속 시간 (임시값 — 위험요인, 2인1조와 동일하게 시작)
 ZONE_CLEAR_SEC = 3.0
+
+STALE_SEC = 0.4        # 마커를 "최근에 봤다"고 인정하는 시간 (카메라 미세 흔들림 흡수)
+                        # 너무 길면 카메라가 실제로 크게 움직였을 때 옛 위치를 써서 오판정 위험 커짐
 
 try:
     _FONT = ImageFont.truetype("C:/Windows/Fonts/malgun.ttf", 20)
@@ -106,27 +121,60 @@ def foot_point(box):
     return (x1 + x2) / 2, y2
 
 
-def detect_zone_polygon(detector, frame):
-    """마커 4개가 모두 보이면 (구역 폴리곤, 검출된 마커 id 목록) 반환, 아니면 (None, 검출목록)."""
+class MarkerMemory:
+    """각 마커 ID의 "마지막으로 본 위치와 시각"을 기억한다.
+    이번 프레임에 안 보여도 STALE_SEC 안이면 그 위치를 그대로 쓴다 —
+    카메라 미세 흔들림으로 인한 순간 미검출을 흡수하기 위함."""
+
+    def __init__(self, stale_sec):
+        self.stale_sec = stale_sec
+        self.seen = {}   # id -> (point, t)
+
+    def observe(self, current, now):
+        """current: 이번 프레임에서 검출된 {id: point}."""
+        for mid, pt in current.items():
+            self.seen[mid] = (pt, now)
+
+    def zone_polygon(self, now):
+        """4개 전부 STALE_SEC 안에 봤으면 (폴리곤, 각 모서리가 이번 프레임 실측인지) 반환."""
+        poly, fresh = [], []
+        for mid in ZONE_MARKER_ORDER:
+            if mid not in self.seen:
+                return None, None
+            pt, t = self.seen[mid]
+            age = now - t
+            if age > self.stale_sec:
+                return None, None
+            poly.append(pt)
+            fresh.append(age < 1e-6)   # 이번 프레임에 방금 갱신됐는지 (거의 0초 전)
+        return poly, fresh
+
+
+def detect_zone_polygon(detector, frame, memory, now):
+    """마커를 검출하고 memory에 기록한 뒤, memory 기준(최근 STALE_SEC 이내)으로
+    구역 폴리곤을 반환한다. 반환: (폴리곤 또는 None, 검출목록, 모서리별 실측여부 또는 None)."""
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     corners, ids, _ = detector.detectMarkers(gray)
-    centers = {}
+    current = {}
     if ids is not None:
         for c, i in zip(corners, ids.flatten()):
-            centers[int(i)] = tuple(c[0].mean(axis=0))
-    if all(mid in centers for mid in ZONE_MARKER_ORDER):
-        poly = [centers[mid] for mid in ZONE_MARKER_ORDER]
-        return poly, sorted(centers.keys())
-    return None, sorted(centers.keys())
+            current[int(i)] = tuple(c[0].mean(axis=0))
+    memory.observe(current, now)
+    poly, fresh = memory.zone_polygon(now)
+    return poly, sorted(current.keys()), fresh
 
 
-def draw_overlay(bgr, zone_poly, person_items, statuses, violation_ids, marker_ids_seen):
+def draw_overlay(bgr, zone_poly, zone_fresh, person_items, statuses, violation_ids, marker_ids_seen):
     img = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
     d = ImageDraw.Draw(img)
 
     if zone_poly:
         d.polygon(zone_poly, outline=(255, 200, 0), width=3)
         d.text((zone_poly[0][0], zone_poly[0][1] - 24), "위험구역", font=_FONT_SMALL, fill=(255, 200, 0))
+        # 모서리 점: 초록 = 이번 프레임에 실제로 봄, 주황 = 최근 기억(살짝 흔들려도 유지 중)
+        for (x, y), is_fresh in zip(zone_poly, zone_fresh):
+            color = (0, 255, 0) if is_fresh else (255, 160, 0)
+            d.ellipse([x - 6, y - 6, x + 6, y + 6], fill=color)
 
     for pid, box in person_items:
         x1, y1, x2, y2 = [int(v) for v in box]
@@ -165,6 +213,7 @@ def main():
         return
 
     zone_states = {}   # track_id -> ZoneState
+    marker_memory = MarkerMemory(STALE_SEC)
     prev_t = time.time()
 
     while True:
@@ -183,7 +232,7 @@ def main():
             (int(b.id), person_box_xyxy(b)) for b in person_res[0].boxes if b.id is not None
         ]
 
-        zone_poly, marker_ids_seen = detect_zone_polygon(detector, frame)
+        zone_poly, marker_ids_seen, zone_fresh = detect_zone_polygon(detector, frame, marker_memory, now)
         zone_poly_i = [(int(x), int(y)) for x, y in zone_poly] if zone_poly else None
 
         statuses, violation_ids = {}, set()
@@ -203,7 +252,7 @@ def main():
         for pid in [p for p, s in zone_states.items() if now - s.last_seen > 30]:
             del zone_states[pid]
 
-        annotated = draw_overlay(frame, zone_poly_i, person_items, statuses, violation_ids, marker_ids_seen)
+        annotated = draw_overlay(frame, zone_poly_i, zone_fresh, person_items, statuses, violation_ids, marker_ids_seen)
 
         fps = 1.0 / (now - prev_t) if now > prev_t else 0.0
         prev_t = now
