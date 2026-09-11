@@ -10,7 +10,9 @@
 
 - 작성자: 신민하 (알티자동화)
 - 저장소: https://github.com/minha8680/rtauto_sop (**public**)
-- 현재 단계: **안전모 착용/미착용 검출 완료(helmet_v2)** → 다음은 인원 수 검출(person) + 추적(ByteTrack)
+- 현재 단계: helmet_v2 + person 검출·추적(ByteTrack) + "N인 1조"·보호구 미착용 규칙 통합
+  데모(`webcam_sop.py`) 완료. **안전구역 침범은 ArUco 마커 기반 PoC 단계**(`webcam_zone.py`,
+  웹캠 검증만, 현장 미검증). 다음은 SOP 문서화 착수 또는 안전구역 PoC 현장성 보강.
 - 전체 로드맵: `개발_진행_계획.docx` (gitignore, 로컬 전용) — Phase 1~8
 
 ### 전체 시스템에서 이 저장소의 위치
@@ -66,6 +68,12 @@ docs/<name>/            (results.csv, results.png, confusion_matrix.png → 커�
 rtauto_sop/
 ├── webcam_helmet.py     # 안전모 착용/미착용 웹캠 테스트. MODEL_PATH=models/helmet_v2_best.pt, CONF 조정 가능
 ├── webcam_person.py     # 인원 수 검출+ByteTrack 추적+"2인 1조" 규칙(3초 지속) 웹캠 데모
+├── webcam_sop.py        # person+helmet_v2 통합 데모. 공간 매칭으로 "헬멧 검출=착용" 문제 해결,
+│                        # N인 1조(기본 3초)+보호구 미착용(기본 10초) 규칙. --crew 등 인자로 파라미터화
+├── webcam_zone.py       # 안전구역 침범 PoC. ArUco 마커 4개로 구역을 매 프레임 재계산
+│                        # (착용형 카메라가 움직여도 화면 고정 폴리곤이 안 통하는 문제 해결)
+├── generate_markers.py  # webcam_zone.py용 ArUco 마커 4장(TL/TR/BR/BL) 생성 → markers/
+├── markers/              # 생성된 마커 PNG (프린트해서 테스트 구역 모서리에 배치)
 ├── predict.py           # 학습 가중치로 test 이미지 일괄 추론
 ├── trackers/bytetrack_person.yaml  # 저FPS(CPU)용 ByteTrack 튜닝 설정
 │                        # main.py 자리는 비워둠 — 통합 파이프라인이 생기면 그게 진입점
@@ -99,25 +107,34 @@ rtauto_sop/
 
 ## 프로젝트 완성도 (현실 체크)
 
-지금까지 완료한 것은 **개발_진행_계획.docx Phase 1(검출 모델) 중 안전모 항목 하나**뿐이다.
-"뼈대를 만들어놨다"고 과대평가하지 말 것. 실제로 있는 것:
+**완료**: 개발_진행_계획.docx Phase 1(검출 모델)의 안전모 항목 + Phase 2(인원 수 검출·추적)
++ 그 둘을 결합한 규칙 미니 데모(`webcam_sop.py`: N인 1조 + 보호구 미착용). 안전구역 침범은
+알고리즘 **개념 검증(PoC)** 까지 — `webcam_zone.py`. 실제로 있는 것:
 
 - helmet_v2 검출 모델 (재사용 가능한 핵심 자산)
 - Colab 학습 파이프라인 (다른 클래스에 재사용)
-- `webcam_helmet.py` / `webcam_person.py` — 웹캠 → 검출 → 화면 표시, **각 30~40줄의 데모 수준**
+- person 검출 + ByteTrack 추적 + 공간 매칭(helmet↔person) + `SustainedLatch` 규칙 패턴
+  (지속시간 확정/해제, 재사용되는 핵심 로직)
+- ArUco 마커로 "카메라가 움직여도 구역을 다시 찾는" 방식 — 웹캠에서 동작 검증됨
 - 실험 결과·한계 문서
 
-**아직 없는 것 (= 시스템 본체)**: 추적(ByteTrack), 인원 수 집계 로직, 상태 집계(3초 창),
-SOP JSON + 규칙 판정 엔진, 편차 등급 산정, 음성 경로(STT/TTS/헤드셋), Web Push 알림, 엣지 PC 통합,
-heartbeat·판정 보류 로직.
+**아직 없는 것 (= 시스템 본체)**: SOP JSON + 규칙 판정 엔진(사람이 만든 SOP 문서 자체가 아직
+없음), 편차 등급 산정, 음성 경로(STT/TTS/헤드셋), Web Push 알림, 엣지 PC 통합, heartbeat 로직,
+항목·순서/급소포인트/STEP 소요시간(SOP 있어야 가능), 작업 세션(근무시간) 게이팅, 알림 반복 억제.
 
 **바디캠이 와도 "꽂으면 시스템이 돈다"가 아니다.** `cv2.VideoCapture(0)` → `VideoCapture("rtsp://…")`
 한 줄 변경 자체는 쉽지만, RTSP는 버퍼링·지연 관리, 끊김 재연결, 2채널 동시 수신, 3fps 다운샘플링,
 SoftAP 무선망 구성이 별도로 필요하다 (며칠짜리). 바디캠 입고의 의미는 **helmet_v2 모델을 실제
 현장 거리·화각(2~4m, 안전모 22~35px)에서 검증 시작**할 수 있게 되는 것이다.
 
-"helmet 검출 = 착용"이 아니라는 점도 중요 (`webcam_test.md` 한계 1). 손에 든 헬멧도 helmet으로
-잡히므로, 착용 판정은 person/head 박스와 helmet 박스의 공간 관계로 규칙 단계에서 해야 한다.
+**안전구역 PoC도 마찬가지로 "완성"이 아니다.** 지금은 프린트한 종이 마커 + 마커 4개가 전부
+보여야만 판정하는 단순 버전. 실전 적용 전 필요한 것: 방수·내구성 있는 마커 재질, 4~10m
+거리에서 인식되는 크기 실측, 마커 일부만 보여도 판정하는 보강 로직, 부착 위치 결정.
+`webcam_zone.py` 최상단 docstring에 한계 정리돼 있음.
+
+"helmet 검출 = 착용"이 아니라는 점도 중요 (`webcam_test.md` 한계 1). `webcam_sop.py`에서
+person/helmet 박스의 공간 관계(박스 안에 중심점 포함)로 이미 해결함 — 새로 만들 때 이 로직
+재사용할 것.
 
 ## 데이터셋 주의사항
 
@@ -136,6 +153,9 @@ SoftAP 무선망 구성이 별도로 필요하다 (며칠짜리). 바디캠 입�
 # 웹캠 추론 테스트 ('q'로 종료) — 로컬 CPU
 python webcam_helmet.py     # 안전모 착용/미착용
 python webcam_person.py     # 인원 수 + 추적 + "2인 1조" 규칙 데모
+python webcam_sop.py        # person+helmet 통합. --crew N 으로 N인 1조 등 파라미터 변경 (--help 참고)
+python webcam_zone.py       # 안전구역 침범 PoC. markers/ 프린트해서 구역 네 모서리에 배치 후 실행
+python generate_markers.py  # webcam_zone.py용 ArUco 마커 재생성
 
 # test 이미지 일괄 추론
 python predict.py
@@ -163,9 +183,12 @@ Roboflow 다운로드가 로컬에서 다시 필요하면 그 절차를 참고�
 ## 다음 작업 (개발_진행_계획.docx Phase 순)
 
 - [x] helmet_v2 학습 + 로컬 웹캠 테스트 평가
-- [x] 인원 수 검출 (`webcam_person.py`) — `yolov8n.pt` COCO person, 학습 불필요. 웹캠 근접에서 안정 검출 확인
-- [ ] **추적 (ByteTrack)** — `webcam_person.py`에 `model.track(...persist=True, tracker="bytetrack.yaml")` 적용.
-  프레임 간 ID 유지, 인원 수 떨림 흡수, 원거리·겹침 조건 누락률 측정
-- [ ] helmet_v2 + person + 추적 결합 → "2인 1조" 규칙 1개 미니 데모 (3초 지속 시 위반 판정)
-- [ ] (병행) 세정기 SOP → JSON 스키마 설계
+- [x] 인원 수 검출 + ByteTrack 추적 (`webcam_person.py`)
+- [x] "N인 1조" 규칙 + 보호구 미착용 규칙 통합 (`webcam_sop.py`, `--crew` 등으로 파라미터화)
+- [x] 안전구역 침범 — ArUco 마커 기반 **개념 검증**(`webcam_zone.py`). 실전 적용 전 마커 재질·
+  인식거리 실측, 부분 가림 대응 로직 보강 필요 (완성도 섹션 참고)
+- [ ] **세정기 SOP 문서 작성 → JSON 스키마 설계** — 코드 작업 아님, 현장 관찰 필요. 이게 있어야
+  항목·순서/급소포인트/STEP 소요시간 항목과 실제 규칙 판정 엔진(Phase 4) 착수 가능. 현재 최대 병목
+- [ ] (선택, SOP 없이도 가능) 안전구역 PoC 보강 — 마커 3개만 보여도 추정, 실내 다른 거리에서 인식 테스트
+- [ ] (선택) Web Push 알림 프로토타입 — FastAPI + 브라우저 구독으로 실제 폰 알림 수신 검증 (Phase 6 일부 선행)
 - [ ] (제품화 시점) 검출 프레임워크 라이선스 재검토 (YOLOv8 AGPL → YOLOX/RT-DETR Apache)
