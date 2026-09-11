@@ -3,7 +3,9 @@
 **작업자 행동인식 기반 SOP 준수 지원 시스템** — AI 모델 학습/검증 저장소
 
 알티자동화(RT Automation)의 시범 과제입니다. 이 저장소는 전체 시스템 중 **객체 검출 모델을
-준비·검증하는 파트**만 담고 있습니다. 현재는 안전모(헬멧) 착용 검출 모델의 PoC 단계입니다.
+준비·검증하는 파트**만 담고 있습니다.
+
+**현재 진행**: 안전모 착용/미착용 검출 모델 확보 완료(helmet_v2). 다음은 인원 수 검출 + 추적.
 
 ---
 
@@ -42,13 +44,13 @@
 - 세정기 특유의 부품이나 급소포인트 동작처럼 공개 모델이 다루지 않는 항목만, 소량의 현장
   영상으로 미세조정(fine-tuning)합니다. 항목별 필요 여부는 1주차 현장 실측에서 확정합니다.
 - **이 저장소의 헬멧 검출 실험**은 위 "보호구 착용" 항목이 공개 데이터/모델로 어느 정도
-  커버되는지 사전 검증하는 작업입니다.
+  커버되는지 사전 검증하는 작업입니다. → 아래 6절 결과 참고.
 
 ### AI 처리 흐름 (영상 경로)
 
 ```
 ① 스트림 수신(RTSP/H.264, FFmpeg 3fps)
-② 객체 검출 (YOLO 계열 1-stage: 사람·안전모·장갑 …)
+② 객체 검출 (YOLO 계열 1-stage: 사람·안전모·장갑 …)      ← 현재 여기 (안전모 완료)
 ③ 추적·좌표화 (ByteTrack, 중복 제거, 구역 좌표 매핑)
 ④ 상태 집계 (인원 수·보호구·구역 체류·자세, 3초 창 다수결)
 ⑤ SOP 대조 (구조화된 SOP와 STEP 순서·표준시간 규칙 비교)
@@ -99,16 +101,26 @@ STT 후 키워드 규칙으로 의도를 분류해 SOP를 조회하고 TTS로 �
 
 ---
 
-## 6. 편차 발생 시 동작 (예시)
+## 6. 학습 결과 — 안전모 착용/미착용 검출
 
-```
-09:10:15  감시단원 바디캠 기준 위험 구역 내 인원 1명 확인
-09:10:18  3초 이상 지속 → 규칙 엔진이 "2인 1조 위반"을 중대 편차로 확정
-09:10:18  헤드셋 연속 경보음 + 음성 경고 재생
-09:10:19  관리자 휴대폰 Web Push 도달 (구역·편차 내용·발생 시각), 미확인 시 30초 재발송
-해제       동일 검출 경로로 2인 복귀가 3초 이상 연속 확인될 때만 자동 해제
-          (관리자 알림 확인이나 작업자 음성 확인으로는 해제 불가)
-```
+공개 데이터만으로 "보호구 착용" 항목을 판정할 수 있는지 검증한 실험입니다.
+
+| | helmet_v1 | **helmet_v2** |
+|---|---|---|
+| 데이터셋 | `hard-hat-detection-ws2wk` (668장, 착용 위주) | `joseph-nelson/hard-hat-workers` (~7,000장) |
+| 클래스 | hard hat / no hard hat / not hard hat | helmet / no_helmet (person 제외) |
+| 미착용 학습 표본 | 16 ~ 64 인스턴스 | 1,000+ 인스턴스 |
+| mAP@50 | 0.41 | **0.96** |
+| 착용 검출률 (recall) | 0.91 | **0.97** |
+| **미착용 검출률 (recall)** | **0.00 ~ 0.33** | **0.95** |
+
+- helmet_v1과 v2는 **학습 설정이 동일**하고 데이터셋만 다릅니다. 미착용 표본을 늘리자 미착용
+  검출률이 0 → 0.95로 올랐습니다. → **성능 한계는 학습량이 아니라 데이터에 있었음**을 확인.
+- 이 시스템의 핵심 판정 대상인 **보호구 미착용(SOP 위반) 검출이 공개 데이터로 가능**함을
+  확인했습니다. 단, 현장 조건(바디캠 화각·거리·조도)에서의 성능은 1주차 실측으로 별도 검증 필요.
+- 상세: [`docs/helmet_v1/metrics.md`](docs/helmet_v1/metrics.md), [`docs/helmet_v2/metrics.md`](docs/helmet_v2/metrics.md)
+
+가중치 파일(`*.pt`)은 용량 문제로 저장소에 포함하지 않습니다 (로컬 `models/` · Google Drive 보관).
 
 ---
 
@@ -116,41 +128,43 @@ STT 후 키워드 규칙으로 의도를 분류해 SOP를 조회하고 TTS로 �
 
 ### 환경
 
-- Windows + Git Bash, Python 가상환경(`venv/`), **GPU 없음 → CPU 학습**
+- Windows + Git Bash, Python 가상환경(`venv/`)
+- 로컬 GPU는 GTX 1050 Ti(4GB)로 학습엔 약함 → **학습은 Google Colab (T4), 로컬은 추론만**
+- 로컬 `torch`는 CPU 빌드. 추론(웹캠)은 CPU로 실시간 충분
 
 ```bash
 source venv/Scripts/activate      # 가상환경 활성화
 ```
 
-### 데이터셋 다운로드
+### 학습 (Google Colab)
 
-Roboflow API 키가 필요합니다. 코드에 하드코딩하지 말고 환경변수로 전달합니다.
+1. Colab 새 노트북 → 런타임을 T4 GPU로 설정
+2. 이 저장소 clone, `pip install ultralytics roboflow`
+3. Colab Secrets(🔑)에 `ROBOFLOW_API_KEY` 등록 후 데이터셋 다운로드
+4. data.yaml 경로 수정 + (필요 시) 클래스 재매핑
+5. `YOLO("yolov8n.pt").train(data=..., epochs=50, imgsz=640, batch=32, device=0)`
+6. `best.pt`, `results.png`, `confusion_matrix.png`, `results.csv` 를 `files.download()` 로 내려받기
+7. 로컬 `models/` · `docs/<name>/` 에 배치 후 커밋
 
-```bash
-export ROBOFLOW_API_KEY="<본인 키>"
-python download_dataset.py         # datasets/helmet_public/ 에 저장 (git에는 미포함)
-```
-
-데이터셋: Roboflow `hard-hat-detection-ws2wk` v1 (yolov8 포맷) — 클래스 3개
-(`hard hat`, `no hard hat`, `not hard hat`), 이미지 668장(train 468 / valid 133 / test 67).
-
-> Roboflow 원본 `data.yaml`의 경로가 잘못되어 있어 절대경로 `path:` 키를 추가해야 학습이
-> 됩니다. (저장소에는 데이터셋이 포함되지 않으므로 내려받은 뒤 직접 수정)
-
-### 학습 / 추론
+### 추론 (로컬)
 
 ```bash
-python train.py                    # 헬멧 검출 학습 (현재 스모크 테스트 설정)
-python main.py                     # 웹캠 실시간 추론 테스트 ('q' 종료)
+python main.py       # 웹캠 실시간 추론 ('q' 종료). MODEL_PATH / CONF 를 파일 상단에서 조정
+python predict.py    # test 이미지 폴더 일괄 추론 → runs/ 에 시각화 저장
 ```
 
 ### 파일
 
 | 파일 | 용도 |
 |---|---|
-| `download_dataset.py` | Roboflow 데이터셋 다운로드 |
-| `train.py` | 헬멧 검출 모델 학습 |
-| `main.py` | 웹캠 + YOLO 실시간 추론 테스트 |
+| `main.py` | 웹캠 실시간 추론 테스트 (기본 모델: `models/helmet_v2_best.pt`) |
+| `predict.py` | 학습 가중치로 test 이미지 일괄 추론 |
+| `download_dataset.py` | Roboflow 데이터셋 다운로드 (API 키는 환경변수 `ROBOFLOW_API_KEY`) |
+| `train.py` | 로컬 학습 스크립트 (CPU 스모크 테스트용 — 실 학습은 Colab) |
+| `docs/helmet_v1/`, `docs/helmet_v2/` | 학습 결과 지표·그래프 |
+
+> Roboflow YOLOv8 export의 `data.yaml`은 경로가 잘못돼 있어(`../train/images`) 절대경로
+> `path:` 키를 추가해야 학습이 됩니다. `datasets/`는 저장소에 포함되지 않습니다.
 
 ---
 
@@ -158,4 +172,5 @@ python main.py                     # 웹캠 실시간 추론 테스트 ('q' 종�
 
 영상 수집 OpenCV · FFmpeg / 검출 Apache-2.0 계열(예: YOLOX) / 음성 인식 faster-whisper(MIT) /
 서버 FastAPI(MIT). 상용 배포 제약을 피하기 위해 검출 모델은 AGPL-3.0이 아닌 라이선스를
-지향합니다. (현재 실험 코드는 `ultralytics` 사용 — 제품 통합 시 재검토)
+지향합니다. 현재 실험은 검증 속도를 위해 `ultralytics`(YOLOv8) 사용 — 데이터셋·학습
+파이프라인은 포맷 호환이라 제품화 시점에 프레임워크만 교체 가능합니다.
