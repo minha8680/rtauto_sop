@@ -47,6 +47,11 @@ view_events.py 로 사람이 읽기 쉽게 요약해서 볼 수 있다.
 저장한다(기획안 그림3/4 "경보 구간 클립(10초)" 대응). --no-clip 으로 끌 수 있다. 클립 쓰기는
 동기적이라 그동안 프레임이 잠깐 밀린다 — 몇 초에 한 번 수준의 이벤트 빈도를 전제한 프로토타입
 타협이며, 실전엔 별도 스레드로 빼야 한다.
+
+클립 저장도 RepeatThrottle이 게이트한다 — 안 그러면 사람이 구역을 들락날락할 때 알림은
+억제되는데 클립만 매번 새로 쓰여서 디스크·프레임에 "녹화 폭탄"이 된다(2026-09-11 발견·수정).
+--push-url 없이 써도(알림 자체를 안 쓰는 조합이어도) 이 억제는 항상 작동한다. 즉 확정 로그는
+매번 남지만, 클립·알림 같은 "무거운 반응"은 반복 억제 대상이다.
 """
 
 import argparse
@@ -192,7 +197,7 @@ def save_clip(frame_buffer, rule, target, now):
     if not frames:
         return None
     os.makedirs(CLIP_DIR, exist_ok=True)
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")   # 마이크로초까지 — 같은 초에 여러 건이면 덮어쓰기 방지
     target_str = f"_id{target}" if target is not None else ""
     path = os.path.join(CLIP_DIR, f"{ts}_{rule}{target_str}.mp4")
     h, w = frames[0].shape[:2]
@@ -209,24 +214,30 @@ def save_clip(frame_buffer, rule, target, now):
 
 def on_violation_confirmed(args, throttle, frame_buffer, rule, target, title, detail, now):
     """위반이 새로 확정된 순간(상승 엣지)에 호출하는 공통 지점.
-    새 규칙이 추가돼도 이 함수만 호출하면 로그·클립 저장·알림이 다 따라온다."""
+    로그(사실 기록)는 항상 남기지만, 클립 저장·알림 발송("무거운 반응")은 RepeatThrottle이
+    공통으로 게이트한다. 안 그러면 사람이 구역을 들락날락할 때 알림은 억제되는데 클립만
+    매번 새로 쓰여서 디스크·프레임에 "녹화 폭탄"이 된다 (2026-09-11 발견·수정) — push_url이
+    없어도(알림 안 쓰는 조합이어도) 게이트가 항상 작동하도록 throttle 평가를 조건 밖으로 뺐다."""
     log_event("confirmed", rule, target, detail)
+
+    ok, note = throttle.should_notify((rule, target), now)
+    if not ok:
+        return   # 최근에 해제됐다 금방 다시 걸린 반복 -> 클립도 알림도 억제, 로그만 남김
+
+    full_detail = detail + (f" {note}" if note else "")
     if not args.no_clip:
         clip_path = save_clip(frame_buffer, rule, target, now)
         if clip_path:
             log_event("clip_saved", rule, target, clip_path)
     if args.push_url:
-        ok, note = throttle.should_notify((rule, target), now)
-        if ok:
-            body = detail + (f" {note}" if note else "")
-            send_push(args.push_url, title, body)
+        send_push(args.push_url, title, full_detail)
 
 
 def on_violation_resolved(args, throttle, rule, target, detail, now):
-    """위반이 해제된 순간(하강 엣지)에 호출하는 공통 지점."""
+    """위반이 해제된 순간(하강 엣지)에 호출하는 공통 지점.
+    push_url 유무와 무관하게 항상 mark_resolved 해야 스로틀이 클립까지 제대로 게이트한다."""
     log_event("resolved", rule, target, detail)
-    if args.push_url:
-        throttle.mark_resolved((rule, target), now)
+    throttle.mark_resolved((rule, target), now)
 
 
 class RepeatThrottle:
