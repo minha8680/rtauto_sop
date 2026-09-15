@@ -111,6 +111,18 @@ STT 후 키워드 규칙으로 의도를 분류해 SOP를 조회하고 TTS로 �
 > iOS는 16.4 이상에서 홈 화면 추가 시에만 Web Push가 동작하며, 잠금화면 알림음은 OS
 > 기본음으로 고정됩니다.
 
+> **업데이트(2026-09-15)**: 위는 기획안 원안(전용 앱 없이 Web Push)이고, 실제로는 관리자 폰용
+> **전용 Android 앱**을 별도로 제작해 진행 중입니다 — [rtauto_sop_android](https://github.com/minha8680/rtauto_sop_android)
+> ("RT SOP 알림"). FCM data-only 메시지를 받아 알림+진동+알람음+TTS로 재생하는 수신 전용 앱이고,
+> 편차 판정은 여전히 이 저장소(엣지 PC 역할)가 담당합니다. 이 저장소의 `push_server.py`(Web Push)는
+> 초기 프로토타입으로 남겨두고, 실제 발송은 `send_test_alert.py`(FCM)로 전환 중입니다.
+> **`send_test_alert.py` → 실제 휴대폰 알림 수신까지 확인 완료** — Web Push가 막혔던
+> HTTPS/MDM 문제를 네이티브 앱 경로로 우회함. **`webcam_sop.py --fcm-token`으로 연결까지
+> 완료** — 3규칙 위반이 실제로 확정될 때마다 자동으로 폰에 알림이 간다(등급도 함께 전달).
+> 단, `rtauto_sop_android`는 **Android 전용**이라 iOS 관리자가 생기면 못 씀 — 그래서
+> `push_server.py`(Web Push, Android/iOS 공통)는 지우지 않고 iOS용 대안 경로로 남겨두기로
+> 결정(2026-09-15, iOS 지원 여부는 보류 상태).
+
 ---
 
 ## 6. 학습 결과 — 안전모 착용/미착용 검출
@@ -134,6 +146,23 @@ STT 후 키워드 규칙으로 의도를 분류해 SOP를 조회하고 TTS로 �
   [`docs/helmet_v2/webcam_test.md`](docs/helmet_v2/webcam_test.md)
 
 가중치 파일(`*.pt`)은 용량 문제로 저장소에 포함하지 않습니다 (로컬 `models/` · Google Drive 보관).
+
+### 학습 결과 — 보안경 착용/미착용 검출 (glasses_v1)
+
+helmet과 같은 "보호구 착용" 항목의 두 번째 대상입니다. 이번엔 학습 전에 클래스 균형부터
+확인(Goggles 4,188 : NO-Goggles 4,092, 약 1:1)하고 시작해 **helmet_v1처럼 실패 없이 첫
+시도에 바로 성공**했습니다.
+
+| 지표 | 값 |
+|---|---|
+| 데이터셋 | Roboflow PPE Combined Model(44,002장, CC BY 4.0)에서 Goggles/NO-Goggles만 필터링 |
+| mAP@50 | **0.97** |
+| 착용 검출률 (recall) | **0.98** |
+| 미착용 검출률 (recall) | **0.95** |
+
+- 상세: [`docs/glasses_v1/metrics.md`](docs/glasses_v1/metrics.md)
+- `webcam_glasses.py`로 단독 웹캠 테스트 가능. **아직 `webcam_sop.py`(감시단원 채널 통합
+  데모)에는 통합 전** — helmet과 함께 붙일지, 별도 판정으로 둘지는 다음 단계에서 결정.
 
 ### 웹캠 테스트에서 확인한 것
 
@@ -285,15 +314,16 @@ python predict.py           # test 이미지 폴더 일괄 추론 → runs/ 에 
 | **`webcam_sop.py`** | **메인 통합 데모** — 감시단원 채널 3규칙(N인 1조 + 보호구 + 안전구역) |
 | `push_server.py` | Web Push 알림 프로토타입 서버 (FastAPI, 구독 페이지 + `/notify`) |
 | `generate_vapid_keys.py` | Web Push용 VAPID 키 생성 (최초 1회) |
+| `send_test_alert.py` | 관리자 폰 전용 앱(rtauto_sop_android)으로 FCM 테스트 발송 — 엣지 PC 대신 |
 | `view_events.py` | `events.jsonl`(위반 이력)을 확정↔해제 짝지어 읽기 좋게 출력 |
 | `clips/` | 위반 확정 시 자동 저장되는 경보 구간 클립(mp4), gitignore |
 | `generate_markers.py`, `markers/` | 안전구역용 ArUco 마커 생성/보관 |
 | `trackers/bytetrack_person.yaml` | 저FPS(로컬 CPU)용 ByteTrack 튜닝 설정 |
 | `requirements.txt` | 로컬 실행 환경 (학습은 Colab이라 무관) |
-| `webcam_helmet.py`, `webcam_person.py`, `webcam_zone.py` | 단계별 검증용 단일 기능 스크립트 |
+| `webcam_helmet.py`, `webcam_glasses.py`, `webcam_person.py`, `webcam_zone.py` | 단계별 검증용 단일 기능 스크립트 |
 | `debug_aruco.py` | 마커 인식 진단 (코드 문제 vs 조명·거리 문제 분리) |
 | `predict.py` | 학습 가중치로 test 이미지 일괄 추론 |
-| `docs/helmet_v1/`, `docs/helmet_v2/` | 학습 결과 지표·그래프·웹캠 테스트 평가 |
+| `docs/helmet_v1/`, `docs/helmet_v2/`, `docs/glasses_v1/` | 학습 결과 지표·그래프·웹캠 테스트 평가 |
 
 > `main.py` 자리는 비워둠 — 작업자/감시단원 2채널을 합친 파이프라인이 생기면 그것이 진입점.
 > 데이터셋 다운로드·로컬 학습 스크립트는 없음 — 학습은 전부 Colab에서 진행 (위 절차 참고).

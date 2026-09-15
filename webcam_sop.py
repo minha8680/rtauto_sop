@@ -32,6 +32,27 @@ push_server.py(Web Push 프로토타입)를 같이 띄워두면 --push-url 로 �
     uvicorn push_server:app --port 8000        # 다른 터미널에서 먼저 실행
     python webcam_sop.py --push-url http://localhost:8000/notify
 
+관리자 폰 전용 앱(rtauto_sop_android, FCM)으로 실제 알림을 보내려면 --fcm-token
+(또는 DEVICE_TOKEN 환경변수)에 앱 홈 화면에서 복사한 기기 토큰을 준다. service-account.json
+(Firebase 서비스 계정 키, gitignore)이 프로젝트 루트에 있어야 함 — send_test_alert.py와
+동일한 발송 방식(data-only, notification 페이로드 금지)을 공유한다:
+
+    export DEVICE_TOKEN="앱에서 복사한 토큰"
+    python webcam_sop.py --fcm-token "$DEVICE_TOKEN"
+
+--push-url과 --fcm-token은 동시에 켜도 되고(둘 다 발송), 규칙별로 앱이 표시할 등급(level)도
+같이 보낸다: crew/zone은 "중대", helmet은 "주의" (기획안 그림4 등급 구분 반영, 재발송/ACK
+스케줄러 자체는 아직 없음 — CLAUDE.md 알림 설계 섹션 참고).
+
+FCM은 확정(kind="alert")뿐 아니라 해제(kind="resolved")도 보낸다 — 둘 다 같은 key(rule:target,
+fcm_key() 참고)를 실어서, 앱이 "지금 울리는 경보와 같은 건인지" 맞춰보고 자동으로 알람을
+끈다(기획안 5.6절 "해제 조건" — 사람이 확인 버튼을 눌러서가 아니라 동일 검출 경로로 정상
+복귀가 재확인됐을 때만 해제되어야 함). 해제 신호는 반복 억제(RepeatThrottle)와 무관하게
+항상 보낸다 — 확정이 스로틀에 막혀 폰까지 못 갔던 경우엔 앱에 매칭되는 활성 경보가 없어
+조용히 무시될 뿐이고, 실제로 알림이 갔던 경우엔 해제도 반드시 도착해야 알람이 안 꺼진 채
+남는 사고를 막을 수 있다. 이 계약(kind/key 필드)은 rtauto_sop_android 쪽
+AlertFcmService/AlertPlayer/EventStore와 짝을 이루므로, 필드명을 바꾸려면 그쪽도 같이 고칠 것.
+
 위반이 "새로 확정된 순간"에만 알림을 보낸다. 해제 후 --repeat-cooldown-min(기본 5분) 안에
 같은 유형(규칙+사람)이 다시 걸리면 반복(flapping)으로 보고 매번 알리지 않고 누적만 하다가,
 --repeat-threshold(기본 3)회에 도달하면 "N회 반복" 요약 알림 1번만 보낸다 (RepeatThrottle).
@@ -64,6 +85,8 @@ from datetime import datetime
 import cv2
 import numpy as np
 import requests
+from google.auth.transport.requests import Request as GoogleAuthRequest
+from google.oauth2 import service_account
 from PIL import Image, ImageDraw, ImageFont
 from ultralytics import YOLO
 
@@ -101,6 +124,12 @@ EVENTS_LOG_PATH = "events.jsonl"   # 위반 확정/해제 이력. 알림 설정�
 CLIP_DIR = "clips"                 # 경보 구간 클립 저장 폴더 (그림3/4 "경보 구간 클립(10초)" 대응)
 DEFAULT_CLIP_SEC = 10.0            # 위반 확정 시점까지의 최근 N초를 클립으로 저장
 
+# 관리자 폰 전용 앱(rtauto_sop_android)으로 FCM 발송할 때 쓰는 설정. send_test_alert.py와 동일.
+FCM_PROJECT_ID = "rtauto-sop"
+FCM_SERVICE_ACCOUNT_FILE = "service-account.json"
+FCM_SCOPES = ["https://www.googleapis.com/auth/firebase.messaging"]
+FCM_LEVEL_BY_RULE = {"crew": "중대", "zone": "중대", "helmet": "주의"}   # 기획안 그림4 등급 구분
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="SOP 통합 데모 (N인 1조 + 보호구 착용 + 안전구역)")
@@ -126,6 +155,10 @@ def parse_args():
     p.add_argument("--push-url", type=str, default=None,
                     help="위반 '확정' 순간(재발 아님, 새로 걸릴 때만) push_server.py의 /notify로 "
                          "POST 요청. 예: http://localhost:8000/notify. 생략하면 알림 전송 안 함")
+    p.add_argument("--fcm-token", type=str, default=os.environ.get("DEVICE_TOKEN", ""),
+                    help="rtauto_sop_android 앱 홈 화면에서 복사한 FCM 기기 토큰. 주면 위반 '확정' "
+                         "순간 실제 폰에 알림 발송(send_test_alert.py와 동일한 발송 방식). "
+                         "DEVICE_TOKEN 환경변수로 줘도 됨. service-account.json 필요")
     p.add_argument("--repeat-cooldown-min", type=float, default=DEFAULT_REPEAT_COOLDOWN_MIN,
                     help=f"해제 후 이 시간(분) 안에 같은 위반이 다시 걸리면 반복으로 간주해 "
                          f"매번 알리지 않고 누적만 함 (기본 {DEFAULT_REPEAT_COOLDOWN_MIN})")
@@ -146,6 +179,64 @@ def send_push(push_url, title, body):
         requests.post(push_url, json={"title": title, "body": body}, timeout=1.5)
     except Exception as e:
         print(f"[push] 알림 발송 실패: {e}")
+
+
+_fcm_credentials = None   # 모듈 전역 캐시 — 매번 파일에서 다시 읽지 않고 토큰 만료 시에만 갱신
+
+
+def _get_fcm_access_token():
+    global _fcm_credentials
+    if _fcm_credentials is None:
+        _fcm_credentials = service_account.Credentials.from_service_account_file(
+            FCM_SERVICE_ACCOUNT_FILE, scopes=FCM_SCOPES
+        )
+    if not _fcm_credentials.valid:
+        _fcm_credentials.refresh(GoogleAuthRequest())
+    return _fcm_credentials.token
+
+
+def fcm_key(rule, target):
+    """rule+target을 앱과 공유하는 하나의 문자열 키로 합친다 (예: "helmet:7", "crew:None").
+    확정(alert) 메시지와 해제(resolved) 메시지가 같은 위반을 가리키는지 앱이 이 값으로
+    맞춰본다 — rtauto_sop_android의 AlertPlayer.currentKey/EventStore.resolveByKey 참고."""
+    return f"{rule}:{target}"
+
+
+def send_fcm(token, title, body, level="중대", kind="alert", key=None):
+    """rtauto_sop_android 앱으로 FCM data-only 메시지 발송 — send_test_alert.py와 동일 설계.
+    notification 키를 넣지 않아야 앱이 백그라운드/종료 상태여도 AlertFcmService가 항상 호출된다.
+    send_push와 같은 정책: 실패해도 메인 루프는 계속 돈다(프로토타입이므로).
+
+    kind="alert"(기본)면 새 경보로 표시+재생, kind="resolved"면 앱이 같은 key로 울리고
+    있던 경보를 조용히 멈춘다(기획안 5.6절 — 해제는 사람 확인이 아니라 재감지로만)."""
+    if not token:
+        return
+    try:
+        access_token = _get_fcm_access_token()
+    except Exception as e:
+        print(f"[fcm] 인증 실패 ({FCM_SERVICE_ACCOUNT_FILE} 확인): {e}")
+        return
+    url = f"https://fcm.googleapis.com/v1/projects/{FCM_PROJECT_ID}/messages:send"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json; UTF-8",
+    }
+    data = {"title": title, "body": body, "level": level, "kind": kind}
+    if key is not None:
+        data["key"] = key
+    message = {
+        "message": {
+            "token": token,
+            "data": data,
+            "android": {"priority": "high"},
+        }
+    }
+    try:
+        resp = requests.post(url, headers=headers, data=json.dumps(message), timeout=3)
+        if resp.status_code != 200:
+            print(f"[fcm] 발송 실패: {resp.status_code} {resp.text}")
+    except Exception as e:
+        print(f"[fcm] 발송 실패: {e}")
 
 
 def log_event(kind, rule, target, detail):
@@ -231,13 +322,23 @@ def on_violation_confirmed(args, throttle, frame_buffer, rule, target, title, de
             log_event("clip_saved", rule, target, clip_path)
     if args.push_url:
         send_push(args.push_url, title, full_detail)
+    if args.fcm_token:
+        send_fcm(args.fcm_token, title, full_detail, level=FCM_LEVEL_BY_RULE.get(rule, "중대"),
+                 kind="alert", key=fcm_key(rule, target))
 
 
 def on_violation_resolved(args, throttle, rule, target, detail, now):
     """위반이 해제된 순간(하강 엣지)에 호출하는 공통 지점.
-    push_url 유무와 무관하게 항상 mark_resolved 해야 스로틀이 클립까지 제대로 게이트한다."""
+    push_url 유무와 무관하게 항상 mark_resolved 해야 스로틀이 클립까지 제대로 게이트한다.
+
+    FCM 해제 신호는 반복 억제(RepeatThrottle)와 무관하게 항상 보낸다 — 확정 알림이 스로틀에
+    막혀 폰까지 못 갔던 경우엔(앱에 매칭되는 활성 경보가 없어) 조용히 무시될 뿐이고, 실제로
+    알림이 갔던 경우엔 반드시 해제 신호도 도착해야 앱의 알람이 계속 울린 채 안 꺼지는 사고를
+    막을 수 있다(기획안 5.6절 "해제 조건" — 사람의 확인이 아니라 재감지로만 해제)."""
     log_event("resolved", rule, target, detail)
     throttle.mark_resolved((rule, target), now)
+    if args.fcm_token:
+        send_fcm(args.fcm_token, "위반 해제", detail, kind="resolved", key=fcm_key(rule, target))
 
 
 class RepeatThrottle:
@@ -564,8 +665,13 @@ def main():
           f"보호구 미착용 (확정 {args.helmet_hold}초/해제 {args.helmet_clear}초), "
           + (f"안전구역 침범 (확정 {args.zone_hold}초/해제 {args.zone_clear}초)"
              if zone_enabled else "안전구역 판정 꺼짐"))
-    if args.push_url:
-        print(f"알림: {args.push_url} | 반복 억제: {args.repeat_cooldown_min}분 안 재발 시 "
+    if args.push_url or args.fcm_token:
+        channels = []
+        if args.push_url:
+            channels.append(f"Web Push({args.push_url})")
+        if args.fcm_token:
+            channels.append(f"FCM(폰 토큰 등록됨, 앞 12자 {args.fcm_token[:12]}...)")
+        print(f"알림: {' + '.join(channels)} | 반복 억제: {args.repeat_cooldown_min}분 안 재발 시 "
               f"{args.repeat_threshold}회마다 요약 1번")
     print(f"경보 구간 클립: {'끔' if args.no_clip else f'{args.clip_sec}초 -> {CLIP_DIR}/'} | "
           f"이벤트 로그: {EVENTS_LOG_PATH}")

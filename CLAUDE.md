@@ -11,11 +11,23 @@
 - 작성자: 신민하 (알티자동화)
 - 저장소: https://github.com/minha8680/rtauto_sop (**public**)
 - 현재 단계: **감시단원 카메라 채널의 3개 판정 항목(N인 1조 / 보호구 착용 / 안전구역 침범)을
-  `webcam_sop.py` 하나로 통합 완료** + Web Push 알림 프로토타입(`push_server.py`) 동작 확인.
+  `webcam_sop.py` 하나로 통합 완료** + 관리자 폰 **실제 알림 수신 검증 완료**(FCM + 전용
+  Android 앱, 2026-09-15 — Web Push 프로토타입은 폰 미검증으로 별개 유지).
   작업자 카메라 채널(항목·순서, 급소포인트)은 **SOP 문서가 없어 착수 불가**. 다음은 SOP 문서화.
 - 기획안 원문(PDF/DOCX)은 사용자 바탕화면에 있고 저장소에는 없다(`*.docx`/`*.pdf` gitignore).
   안전구역 설정 방식은 기획안에 없던 내용이라 "5.7 안전구역 설정 방식" 절을 추가한
   사본을 만들어 둠: `바탕화면/장비_구매_기획안_1안_최종본_안전구역설정방식추가.docx`
+- **관리자 휴대폰 알림 앱은 별도 저장소이자 별도 로컬 경로**: 이 저장소(`rtauto_sop`)는
+  `Desktop/rtauto_sop`에 있지만, 안드로이드 앱의 실제 작업 폴더는
+  **`C:\Users\1111\AndroidStudioProjects\rtauto_sop`** (Android Studio 기본 프로젝트 위치,
+  이름은 똑같이 `rtauto_sop`라 헷갈리기 쉬움). 원격 저장소는 아래:
+  https://github.com/minha8680/rtauto_sop_android
+  (Android/Kotlin, "RT SOP 알림"). FCM data-only 메시지를 받아 알림+진동+알람음+TTS로 재생하는
+  수신 전용 앱 — 편차 판정은 여전히 이 저장소(엣지 PC)가 함. 메시지 계약: FCM `data` 페이로드만
+  사용(`notification` 금지 — 앱이 백그라운드일 때 커스텀 재생 로직이 안 불림), 필드는
+  `kind`("alert"|"resolved", 기본 alert)/`key`(rule:target, 확정↔해제 매칭용)/`title`/`body`/
+  `level`(중대·일반·주의, 기본 중대). `kind="resolved"`는 새 알림 없이 같은 key의 알람만 끔
+  (기획안 5.6절 해제 조건). 자세한 아키텍처는 그 저장소의 CLAUDE.md 참고.
 
 ### 전체 시스템에서 이 저장소의 위치
 
@@ -110,13 +122,15 @@ rtauto_sop/
 ├── webcam_sop.py        # ★ 메인 통합 데모 (= 감시단원 채널 처리기)
 │                        #   person+helmet_v2+ArUco 구역을 한 루프에서. 3규칙:
 │                        #   N인1조(3초) / 보호구 미착용(10초) / 안전구역 침범(3초)
-│                        #   --crew, --*-hold, --no-zone, --push-url 로 파라미터화.
+│                        #   --crew, --*-hold, --no-zone, --push-url, --fcm-token 로 파라미터화.
 │                        #   위반 확정/해제는 on_violation_confirmed/resolved 공통 지점을
-│                        #   거쳐 events.jsonl 기록 + clips/ 클립 저장 + (설정 시) 알림 발송
+│                        #   거쳐 events.jsonl 기록 + clips/ 클립 저장 + (설정 시) Web Push/FCM 발송
 │                        #   — 새 규칙 추가돼도 이 두 함수만 호출하면 전부 자동으로 따라옴
 ├── view_events.py       # events.jsonl을 사람이 읽기 좋게(확정↔해제 짝짓고 지속시간까지) 출력
 ├── push_server.py       # Web Push 알림 프로토타입 서버(FastAPI). 구독 페이지 + /notify
 ├── generate_vapid_keys.py  # Web Push용 VAPID 키 생성 (최초 1회)
+├── send_test_alert.py   # rtauto_sop_android 앱으로 FCM data-only 테스트 발송 (엣지 PC 역할 대신)
+│                        #   service-account.json(gitignore) + DEVICE_TOKEN 환경변수 필요
 ├── generate_markers.py  # ArUco 마커 4장(TL/TR/BR/BL) 생성 → markers/
 ├── markers/             # 생성된 마커 PNG (프린트해서 구역 네 모서리에 배치)
 ├── trackers/bytetrack_person.yaml  # 저FPS(CPU)용 ByteTrack 튜닝 설정
@@ -124,6 +138,7 @@ rtauto_sop/
 │
 │   ── 아래는 단계별 검증용으로 남겨둔 단일 기능 스크립트 (통합본은 webcam_sop.py) ──
 ├── webcam_helmet.py     # 안전모 착용/미착용만
+├── webcam_glasses.py    # 보안경 착용/미착용만 (glasses_v1, 아직 webcam_sop.py 미통합)
 ├── webcam_person.py     # 인원 수+추적+2인1조 규칙만
 ├── webcam_zone.py       # 안전구역 침범만 (MarkerMemory 원본 구현)
 ├── debug_aruco.py       # 마커 인식 자체만 진단 (코드 vs 조명/거리 문제 분리용)
@@ -131,8 +146,9 @@ rtauto_sop/
 │                        # main.py 자리는 비워둠 — 2채널 통합 파이프라인이 생기면 그게 진입점
 ├── docs/
 │   ├── helmet_v1/       # 착용 위주 데이터셋 baseline 결과 (실패 사례)
-│   └── helmet_v2/       # 착용/미착용 2클래스 결과 (성공) + webcam_test.md
-├── models/              # .gitignore(*.pt) — helmet_v1_best.pt, helmet_v2_best.pt (로컬 전용)
+│   ├── helmet_v2/       # 착용/미착용 2클래스 결과 (성공) + webcam_test.md
+│   └── glasses_v1/      # 보안경 착용/미착용 2클래스 결과 (성공, 첫 시도)
+├── models/              # .gitignore(*.pt) — helmet_v1/v2_best.pt, glasses_v1_best.pt (로컬 전용)
 ├── datasets/, runs/, venv/          # .gitignore
 ├── yolov8n.pt                        # 사전학습 가중치 (*.pt로 제외)
 ├── vapid_private_key.pem            # .gitignore(*.pem) — Web Push 서명 키, 비공개
@@ -146,7 +162,8 @@ rtauto_sop/
 ```
 
 `.gitignore`: `venv/`, `*.pt`, `datasets/`, `runs/`, `.env`, `*.pem`, `vapid_public_key.txt`,
-`push_subscriptions.json`, `events.jsonl`, `clips/`, `*.docx`, `*.pdf`, `.idea/`, `.vscode/`
+`push_subscriptions.json`, `service-account.json`, `events.jsonl`, `clips/`, `*.docx`, `*.pdf`,
+`.idea/`, `.vscode/`
 
 ## 학습한 모델
 
@@ -154,19 +171,37 @@ rtauto_sop/
 |---|---|---|---|---|
 | helmet_v1 | Roboflow `hard-hat-detection-ws2wk` v1 (668장) | hard hat / no hard hat / not hard hat | mAP50 0.41. 착용 recall 0.91, **미착용 0.00~0.33 (실패)** | `models/helmet_v1_best.pt` |
 | **helmet_v2** | Roboflow `joseph-nelson/hard-hat-workers` (~7,000장) | helmet / no_helmet (person 제외) | **mAP50 0.96. 착용 recall 0.97, 미착용 0.95 (성공)** | `models/helmet_v2_best.pt` |
+| **glasses_v1** | Roboflow PPE Combined Model에서 Goggles/NO-Goggles만 필터링 (8,280 인스턴스, 1:1 균형) | glasses / no_glasses | **mAP50 0.97. 착용 recall 0.98, 미착용 0.95 (성공, 첫 시도부터)** | `models/glasses_v1_best.pt` |
 
 - **핵심 교훈**: helmet_v1과 v2는 학습 설정 동일, **데이터셋만 교체**. 미착용 학습 표본이
   16~64개 → 1,000개 이상으로 늘자 미착용 recall 0.00 → 0.95. "학습량이 아니라 데이터 문제".
-- 자세한 지표는 `docs/helmet_v1/metrics.md`, `docs/helmet_v2/metrics.md`,
+- 자세한 지표는 `docs/helmet_v1/metrics.md`, `docs/helmet_v2/metrics.md`, `docs/glasses_v1/metrics.md`,
   웹캠 테스트 평가는 `docs/helmet_v2/webcam_test.md`.
+- **glasses_v1은 helmet_v1의 실패를 학습해서 처음부터 클래스 균형(4,188:4,092)을 확인하고
+  시작 → 첫 시도에 바로 성공**. helmet처럼 v1/v2를 거칠 필요가 없었음.
+
+### 데이터셋 출처·라이선스 (2026-09-11 확인, public 저장소라 반드시 지킬 것)
+
+| 모델 | 데이터셋 출처 | 라이선스 | 의무사항 |
+|---|---|---|---|
+| helmet_v1 | [Hard hat detection](https://universe.roboflow.com/adamson-university-nrlyj/hard-hat-detection-ws2wk) (Adamson University, Roboflow Universe, v1, 668장) | **CC BY 4.0** | 출처 표기 필요 (원저작자 표기 없이 그대로 배포·재공유 금지) |
+| helmet_v2 | [Hard Hat Workers](https://universe.roboflow.com/joseph-nelson/hard-hat-workers) (Roboflow 재공개, 원출처 Northeastern University - China, Harvard Dataverse doi:10.7910/DVN/7CBGOS, ~7,000장) | **Public Domain (CC0 1.0)** | 없음 — 출처 표기 의무는 없으나 관례상 계속 표기 |
+| glasses_v1 | [Personal Protective Equipment - Combined Model](https://universe.roboflow.com/roboflow-universe-projects/personal-protective-equipment-combined-model) (Roboflow Universe, 44,002장 중 Goggles/NO-Goggles만 필터링) | **CC BY 4.0** | 출처 표기 필요 |
+
+- 두 데이터셋 모두 상업적 이용 제한은 없음(CC BY 4.0도 상업적 사용 허용, 조건은 출처 표기뿐).
+- **학습된 가중치(`models/helmet_v1_best.pt`, `helmet_v2_best.pt`) 자체는 `*.pt`로 gitignore돼
+  저장소엔 없음** — 그래도 데이터셋 출처는 공개 코드/문서(`docs/helmet_v1/`, `docs/helmet_v2/`,
+  이 표)에 항상 남겨둘 것. 새 데이터셋을 받을 때도 이 표에 출처·라이선스를 바로 추가할 것
+  (예정: 보안경 데이터셋 — 아래 "다음 작업" 참고).
 
 ## 프로젝트 완성도 (현실 체크)
 
 **완료**: **감시단원 카메라 채널의 판정 항목 3개 전부**(N인 1조 / 보호구 착용 / 안전구역 침범)를
 `webcam_sop.py` 하나로 통합. 안전구역은 알고리즘 **개념 검증(PoC)** 수준. 실제로 있는 것:
 
-- helmet_v2 검출 모델 (재사용 가능한 핵심 자산)
-- Colab 학습 파이프라인 (다른 클래스에 재사용)
+- helmet_v2, glasses_v1 검출 모델 (재사용 가능한 핵심 자산 — glasses_v1은 아직 `webcam_sop.py`
+  미통합, 단독 스크립트(`webcam_glasses.py`)로만 검증됨)
+- Colab 학습 파이프라인 (glasses_v1으로 재사용 검증됨 — 클래스만 다른 데이터셋 재활용에 효과적)
 - person 검출 + ByteTrack 추적 + 공간 매칭(helmet↔person) + `SustainedLatch` 규칙 패턴
   (지속시간 확정/해제, 재사용되는 핵심 로직)
 - ArUco 마커로 "카메라가 움직여도 구역을 다시 찾는" 방식 — 웹캠에서 동작 검증됨
@@ -181,8 +216,9 @@ rtauto_sop/
 - **작업자 카메라 채널 전체** (항목·순서, 급소포인트) — SOP 문서가 없어 착수 불가
 - SOP JSON + 규칙 판정 엔진, STEP 소요시간 — 마찬가지로 SOP 문서가 선행 조건
 - 2채널 동시 수신·통합 구조 (지금은 단일 카메라 전제)
-- 편차 등급(중대/주의/일반) 차등 발송, 알림 반복 억제, 작업 세션(근무시간) 게이팅
+- 편차 등급별 재발송·ACK 스케줄러, 작업 세션(근무시간) 게이팅 (알림 반복 억제·등급 표시는 완료)
 - 음성 경로(STT/TTS/헤드셋), 엣지 PC 통합, heartbeat 로직, 위험 자세 검출
+- 실제 웹캠 구동 중 위반 발생 → FCM 자동 알림의 전체 경로 실측 (함수 연결은 완료, 실측은 다음 단계)
 
 **바디캠이 와도 "꽂으면 시스템이 돈다"가 아니다.** `cv2.VideoCapture(0)` → `VideoCapture("rtsp://…")`
 한 줄 변경 자체는 쉽지만, RTSP는 버퍼링·지연 관리, 끊김 재연결, 2채널 동시 수신, 3fps 다운샘플링,
@@ -211,6 +247,41 @@ person/helmet 박스의 공간 관계(박스 안에 중심점 포함)로 이미 
   필요), (b) 회사 관리 안 받는 개인 폰으로 시도, (c) 엣지 PC에 실제 HTTPS 인증서 붙을 때 같이
   검증(가장 실전에 가까움, 장비 입고 후).
 
+### 관리자 폰 실제 알림 수신 — FCM 경로로 검증 완료 (2026-09-15)
+
+위 Web Push(브라우저 기반) 프로토타입과는 **별개의 두 번째 알림 경로**로, 전용 Android 앱
+([rtauto_sop_android](https://github.com/minha8680/rtauto_sop_android))을 만들어 FCM(Firebase
+Cloud Messaging)으로 전환 — **실제 휴대폰에 알림이 뜨는 것까지 확인됨**. Web Push가 막혔던
+HTTPS/MDM 문제를 우회한 셈(네이티브 앱은 브라우저 Push API 제약을 안 받음).
+
+- 이 저장소(엣지 PC 역할)에서 `send_test_alert.py`로 FCM data-only 메시지 발송 →
+  앱의 `AlertFcmService`가 수신 → 알림+진동+알람음+TTS 재생까지 앱 쪽에서 처리
+- 필요한 것: Firebase 서비스 계정 키(`service-account.json`, gitignore) + 앱이 발급한
+  기기 토큰(`DEVICE_TOKEN` 환경변수) — 둘 다 이 저장소엔 없고 로컬/환경변수로만 존재
+- **`webcam_sop.py`에 연결 완료(2026-09-15)** — `--fcm-token`(또는 `DEVICE_TOKEN` 환경변수)을
+  주면 3규칙(N인1조/보호구/안전구역) 위반이 실제로 확정될 때마다 `on_violation_confirmed`가
+  `send_fcm()`을 호출해 자동으로 폰에 알림이 간다. `--push-url`과 동시에 켤 수 있고(둘 다 발송),
+  규칙별 등급(`FCM_LEVEL_BY_RULE`: crew/zone=중대, helmet=주의)도 같이 보내 앱의 등급 배지에 반영됨.
+  RepeatThrottle 게이트도 Web Push와 동일하게 적용(반복 위반 시 억제).
+  실제 웹캠 실행으로 검증은 아직(다음 확인 대상) — 함수 연결 자체는 monkeypatch 단위 테스트로 검증
+- **위반 해제 시 폰 알람 자동 종료(2026-09-15 완료, 앱 쪽도 같이 수정)** — 기획안 5.6절
+  "해제 조건"(사람의 확인이 아니라 동일 검출 경로 재확인으로만 해제)을 반영. 확정 메시지에
+  `kind="alert"`, 해제 메시지에 `kind="resolved"`를 같은 `key`(`fcm_key(rule, target)`,
+  예 `"helmet:7"`)와 함께 실어 보내고, 앱(`rtauto_sop_android`)이 그 key로 "지금 울리는
+  경보와 같은 건인지" 맞춰봐서 자동으로 알람만 끈다(새 알림 없이 조용히). 해제 신호는
+  RepeatThrottle과 무관하게 항상 발송 — 확정이 스로틀에 막혀 폰까지 안 갔으면 앱에서 매칭될
+  게 없어 조용히 무시되고, 실제로 갔으면 해제도 반드시 도착해 알람이 안 꺼진 채 안 남게 함.
+  단위 테스트로 confirmed/resolved의 key가 항상 일치하는지 검증. 앱 쪽 변경은
+  `rtauto_sop_android`의 `feature/fcm-auto-resolve` 브랜치, Kotlin 컴파일 확인 완료 —
+  실제 폰 설치·동작 확인은 다음 단계
+- `push_server.py`(Web Push)는 초기 프로토타입으로 남겨두되, 실제 알림 경로는 이쪽(FCM+전용
+  앱)으로 굳어지는 중 — 최종적으로 하나로 정리할지는 추후 결정
+- **iOS 지원 판단 보류(2026-09-15)**: `rtauto_sop_android`는 **Android 전용**. 지금 관리자는
+  Android지만 나중에 iOS 쓰는 관리자가 생길 가능성이 있어, iOS용 앱을 따로 만들지는 보류.
+  그래서 **`push_server.py`(Web Push, Android/iOS 공통)를 지우지 않고 iOS 대안 경로로 유지**
+  하기로 함 — iOS 관리자가 실제로 생기면 그때 Web Push 쪽을 마저 완성(휴대폰 실 수신 검증 등)
+  하거나 iOS FCM 앱을 새로 만들지 결정
+
 ### 알림 설계 — 나중에 반영할 논의 결과 (오탐 피로 방지)
 
 관리자에게 알림이 너무 자주 가면 신뢰를 잃는다(alarm fatigue). `push_server.py`(실제 알림
@@ -223,8 +294,10 @@ person/helmet 박스의 공간 관계(박스 안에 중심점 포함)로 이미 
    해제 후 `--repeat-cooldown-min`(기본 5분) 안에 같은 유형(규칙+사람 ID)이 다시 걸리면 억제,
    `--repeat-threshold`(기본 3)회 도달 시 "N회 반복" 요약 알림 1번. 규칙별(crew/helmet/zone)
    + 사람 ID별로 독립적으로 카운트(키 충돌 없음, 단위 테스트로 검증).
-3. **작업 세션 게이팅** — 점심·교대 시간엔 규칙 평가 자체를 끔. 카메라를 물리적으로 끄는 건
-   비추천(수동 의존·영상 공백). 고정 시간표로 시작 → SOP 엔진 완성 후 자동 감지로 전환. 미구현
+3. **작업 세션 게이팅** — 점심·교대 시간엔 규칙 평가 자체를 끔. **미구현, 2026-09-11 보류 판단**:
+   "카메라 물리적으로 끄기 비추천"은 **무인 엣지 PC 운영 시점** 얘기(끄고 켜는 걸 사람이 잊으면
+   기록 공백·오작동 구분 불가). 지금은 개발자가 터미널에서 직접 실행/종료하는 프로토타입 단계라
+   Ctrl+C로 충분 — 자동 스케줄링은 무인 운영 착수 시점에 만들 것.
 4. **오탐 신고 → 튜닝 데이터 축적** — 이벤트 DB 스키마에 "확인/오탐" 필드를 미리 넣어둘 것. 미구현
 
 ## 데이터셋 주의사항
@@ -251,6 +324,14 @@ python generate_vapid_keys.py                     # 최초 1회
 uvicorn push_server:app --port 8000               # 터미널 1: 알림 서버 (localhost:8000 접속해 구독)
 python webcam_sop.py --push-url http://localhost:8000/notify   # 터미널 2
 
+# 실제 관리자 폰 앱(rtauto_sop_android)으로 FCM 테스트 발송 — 엣지 PC 없이 이 PC에서 대신 발송
+export DEVICE_TOKEN="앱 홈 화면에서 복사한 토큰"
+python send_test_alert.py     # service-account.json 필요 (Firebase 콘솔에서 발급, gitignore)
+
+# webcam_sop.py에서 실제 위반 검출 시 자동으로 폰에 FCM 알림 (DEVICE_TOKEN 위와 동일하게 설정 후)
+python webcam_sop.py --fcm-token "$DEVICE_TOKEN"                       # FCM만
+python webcam_sop.py --push-url http://localhost:8000/notify --fcm-token "$DEVICE_TOKEN"   # 둘 다
+
 # 위반 이력 확인 (webcam_sop.py 실행 중/후 아무 때나, --push-url 없어도 기록됨)
 python view_events.py                # 전체
 python view_events.py --rule zone --today
@@ -261,6 +342,7 @@ python webcam_sop.py --clip-sec 5
 
 # 단일 기능 검증용 (통합본 문제 생겼을 때 원인 분리에 유용)
 python webcam_helmet.py     # 안전모만
+python webcam_glasses.py    # 보안경만 (glasses_v1)
 python webcam_person.py     # 인원 수 + 추적만
 python webcam_zone.py       # 안전구역만
 python debug_aruco.py       # 마커 인식되는지만 (조명/거리/인쇄 문제 진단)
@@ -316,10 +398,33 @@ Roboflow 다운로드가 로컬에서 다시 필요하면 그 절차를 참고�
   스로틀 판단 하나로 공통 게이트"로 재구성 — `mark_resolved`/`should_notify`를 push_url과
   무관하게 항상 호출하도록 고침. 단위 테스트로 flapping 시 clip_saved 로그가 급감하는지,
   디스크에 실제로 적게 남는지 검증
-- [ ] 위험 자세 검출 — 표1 위험요인의 나머지 하나(안전구역은 완료). SOP·하드웨어 무관,
-  COCO pose estimation(학습 불필요)으로 착수 가능. 감시단원 채널 마지막 빈칸
-- [ ] 음성 경로 PoC — 마이크→VAD→faster-whisper STT→키워드 의도 분류→TTS 응답. SOP 내용
-  없이도 뼈대는 검증 가능(SOP 조회 부분만 가짜 응답으로). 블루투스 헤드셋 대신 PC 마이크/스피커
+- [ ] 위험 자세 검출 — 표1 위험요인의 나머지 하나(안전구역은 완료). **2026-09-11 재검토**: "위험
+  자세"를 SOP 기준(이 작업 단계에선 이 자세가 정상/위험)으로 판정하려면 SOP 문서가 선행돼야
+  해서 지금은 착수 불가 — 세정기 현장 관찰과 같은 병목. 대신 SOP와 무관한 **범용 낙상/이상자세
+  감지**(COCO pose keypoint로 몸이 갑자기 수평이 되는 등)로 스코프를 좁히면 착수는 가능하다는
+  방향만 논의함, 아직 미착수. 착수 시 "SOP 특정 판정 아님, 범용 proxy" 라고 문서에 명시할 것
+- [ ] 음성 경로 PoC — 마이크→VAD→faster-whisper STT→키워드 의도 분류→TTS 응답. **현재 로컬
+  환경에 마이크·스피커가 없어 진행 불가(2026-09-11 확인)** — 하드웨어 확보 후 재검토. SOP 내용
+  없이도 뼈대는 검증 가능(SOP 조회 부분만 가짜 응답으로)할 계획이었음
+- [x] **보안경(safety glasses) 착용 검출 모델 학습 (2026-09-14 완료)** — Roboflow PPE Combined
+  Model(44,002장, CC BY 4.0)에서 Goggles/NO-Goggles만 라벨 필터링(유료 "Modify Classes" 대신
+  스크립트로 처리) → Colab 50 epoch 학습. **mAP50 0.97, 착용 recall 0.98, 미착용 0.95 —
+  helmet과 달리 첫 시도부터 성공**(학습 전 클래스 균형 4,188:4,092 확인해둔 덕). 결과:
+  `models/glasses_v1_best.pt`, `docs/glasses_v1/metrics.md`. `webcam_glasses.py`로 로컬 웹캠
+  단독 테스트 가능 — 아직 `webcam_sop.py` 통합 전(다음 단계)
+- [x] **관리자 폰 실제 알림 수신 검증 (2026-09-15 완료)** — 전용 Android 앱
+  ([rtauto_sop_android](https://github.com/minha8680/rtauto_sop_android))을 만들어 FCM으로
+  전환, `send_test_alert.py`로 발송 → **실제 휴대폰 알림 도달 확인**. Web Push가 막혔던
+  HTTPS/MDM 문제를 네이티브 앱으로 우회
+- [x] **FCM을 webcam_sop.py에 연결 (2026-09-15 완료)** — `--fcm-token`(`DEVICE_TOKEN` 환경변수도
+  가능)으로 3규칙 위반 확정 시 실제 폰 알림 자동 발송. 규칙별 등급(중대/주의)도 같이 전달,
+  RepeatThrottle 게이트 동일 적용. **다음 확인 대상**: 실제 웹캠 켜서 안전모 미착용 등을 진짜로
+  유발했을 때 폰 알림이 뜨는지 최종 확인 (함수 연결 자체는 monkeypatch 테스트로 검증됨)
+- [x] **위반 해제 시 폰 알람 자동 종료 (2026-09-15 완료)** — 기획안 5.6절 "해제 조건"(ACK이
+  아니라 재감지로만 해제) 반영. `on_violation_resolved`도 FCM(`kind="resolved"`)을 보내
+  앱이 같은 `key`의 알람을 자동으로 멈추게 함. 앱 쪽(`C:\Users\1111\AndroidStudioProjects\rtauto_sop`,
+  `feature/fcm-auto-resolve` 브랜치)도 같이 수정 — Kotlin 컴파일 확인, **실제 폰 설치·동작
+  확인은 다음 단계**
 - [ ] (선택) 알림 등급별 차등 발송 — 위 "알림 설계" 섹션 참고. 서버 쪽 스케줄러·ACK까지
   필요해 규모가 큼, 지금 급하지 않음
 - [ ] (장비 입고 후) RTSP 2채널 수신 + 현장 재튜닝 + GPU 동시 부하 검증
