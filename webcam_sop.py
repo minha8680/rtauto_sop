@@ -9,10 +9,24 @@
 중심점이 들어오는지로 "그 사람이 실제로 썼는가"를 판정한다 (webcam_test.md 한계 1 해결).
 안전구역도 마찬가지로 "화면 좌표 고정"이 아니라 마커 위치 기준으로 재계산한다 —
 착용형 카메라가 움직여도 구역이 따라오고, 마커가 안 보이면 판정 보류로 침묵한다.
+보호구 판정도 동일한 원칙을 따른다 — 각도·거리 문제로 잠깐 helmet/no_helmet 어느 쪽도
+못 잡으면(PersonState "미확인") "착용"으로 넘겨짚지 않고 직전 판정을 그대로 유지한다
+(2026-09-16 수정). 전에는 "미확인"을 "착용"과 같은 값(False)으로 넘겨서 해제 타이머를
+진행시켰기 때문에, 헬멧이 잠깐 프레임 밖으로 나가기만 해도 실제로는 계속 미착용인 위반이
+조기에 풀려버렸다.
 마커 4개 중 1개가 가려져 3개만 보이면, 평행사변형 근사(대각선 중점이 같다는 성질)로
 4번째를 추정해 계속 판정한다 — 화면에 그 모서리는 빈 원(마젠타색)으로 표시되어
 "이건 실측이 아니라 추정"임을 구분할 수 있다. --no-zone-estimate 로 끌 수 있다.
 준비물(마커 인쇄·배치)은 webcam_zone.py 상단 docstring 참고.
+
+사람 추적 ID도 같은 종류의 문제를 겪는다 — ByteTrack이 매기는 ID가 사람이 잠깐 화면을
+벗어나거나 빠르게 움직이면 바뀌는데, 위반 판정(PersonState/ZoneState)이 이 ID를 키로
+저장하다 보니 ID가 바뀌면 실제로는 아무것도 해결 안 됐는데 "위반 해제"로 잘못 보고되고
+새 ID로 타이머가 처음부터 다시 돈다(2026-09-16 발견, 실전에서 "사람마다 보고 ID가 계속
+바뀌면 안 된다"는 문제 제기로 확인). PersonIdentityMemory가 마커와 같은 방식으로
+"방금(--id-bridge-gap-sec 이내) 사라진 사람의 마지막 위치 근처에 새 ID가 나타나면 같은
+사람으로 이어붙인다" — 완벽한 재식별은 아니고 짧은 순간의 ID 이탈만 버티는 실험적
+기능이라, 오작동하면 --no-id-bridge로 끄고 예전처럼 raw ID를 그대로 쓸 수 있다.
 
 규칙 3개, 전부 SustainedLatch(지속 시간 채워야 확정/해제)로 처리한다.
   - N인 1조: 인원 수 != N 이 지속 -> 위반 / N명 복귀 지속 -> 해제 (기획안 5.6절, 기본 N=2/3초)
@@ -53,10 +67,12 @@ fcm_key() 참고)를 실어서, 앱이 "지금 울리는 경보와 같은 건인
 남는 사고를 막을 수 있다. 이 계약(kind/key 필드)은 rtauto_sop_android 쪽
 AlertFcmService/AlertPlayer/EventStore와 짝을 이루므로, 필드명을 바꾸려면 그쪽도 같이 고칠 것.
 
-위반이 "새로 확정된 순간"에만 알림을 보낸다. 해제 후 --repeat-cooldown-min(기본 5분) 안에
-같은 유형(규칙+사람)이 다시 걸리면 반복(flapping)으로 보고 매번 알리지 않고 누적만 하다가,
---repeat-threshold(기본 3)회에 도달하면 "N회 반복" 요약 알림 1번만 보낸다 (RepeatThrottle).
-등급별 차등 발송(중대/주의별 재발송·확인)은 아직 없음 — CLAUDE.md 알림 설계 섹션 참고.
+위반이 "새로 확정된 순간"마다 알림을 보낸다 — 해제 후 --repeat-cooldown-min(기본 5분) 안에
+같은 유형(규칙+사람)이 다시 걸려도(flapping) **알림은 이제 매번 보낸다**(2026-09-16 정책
+변경 — 실사용해보니 "재감지된 실제 위반은 매번 알려야 안전하다"는 게 확인됨). RepeatThrottle의
+반복 횟수는 계속 세서 --repeat-threshold(기본 3)회째부터는 "(최근 N분 내 M회 반복)" 문구를
+알림 본문에 덧붙이기만 한다 — 발송 자체를 막지는 않는다. 등급별 차등 발송(중대/주의별
+재발송·확인)은 아직 없음 — CLAUDE.md 알림 설계 섹션 참고.
 
 모든 위반 확정/해제는 --push-url 설정과 무관하게 events.jsonl 에 기록된다 (기획안 그림3
 "엣지 PC 저장" 대응). 규칙 종류(rule)와 상관없이 on_violation_confirmed/resolved 라는
@@ -69,10 +85,11 @@ view_events.py 로 사람이 읽기 쉽게 요약해서 볼 수 있다.
 동기적이라 그동안 프레임이 잠깐 밀린다 — 몇 초에 한 번 수준의 이벤트 빈도를 전제한 프로토타입
 타협이며, 실전엔 별도 스레드로 빼야 한다.
 
-클립 저장도 RepeatThrottle이 게이트한다 — 안 그러면 사람이 구역을 들락날락할 때 알림은
-억제되는데 클립만 매번 새로 쓰여서 디스크·프레임에 "녹화 폭탄"이 된다(2026-09-11 발견·수정).
---push-url 없이 써도(알림 자체를 안 쓰는 조합이어도) 이 억제는 항상 작동한다. 즉 확정 로그는
-매번 남지만, 클립·알림 같은 "무거운 반응"은 반복 억제 대상이다.
+클립 저장은 RepeatThrottle이 게이트한다(2026-09-11 발견·수정, 알림 정책은 2026-09-16에
+바뀌었지만 클립은 그대로) — 안 그러면 사람이 구역을 들락날락할 때마다 클립이 매번 새로
+쓰여서 디스크·프레임에 "녹화 폭탄"이 된다. --push-url/--fcm-token 없이 써도(알림 자체를
+안 쓰는 조합이어도) 이 억제는 항상 작동한다. 즉 확정 로그와 알림은 매번 남지만, 클립만
+반복 억제 대상이다.
 """
 
 import argparse
@@ -116,6 +133,9 @@ DEFAULT_HELMET_CLEAR_SEC = 10.0
 DEFAULT_ZONE_HOLD_SEC = 3.0       # 구역 침범 확정 지속 시간 (위험요인, 2인1조와 동일하게 시작)
 DEFAULT_ZONE_CLEAR_SEC = 3.0
 
+DEFAULT_ID_BRIDGE_GAP_SEC = 2.0   # 사람이 사라진 뒤 이 시간(초) 안에 새 추적 ID가 나타나면 같은 사람으로 이어붙임
+DEFAULT_ID_BRIDGE_DIST_PX = 120   # 마지막 위치에서 이 픽셀 반경 안이어야 같은 사람으로 인정
+
 DEFAULT_REPEAT_COOLDOWN_MIN = 5.0  # 해제 후 이 시간(분) 안에 같은 위반이 다시 걸리면 "반복"으로 간주
 DEFAULT_REPEAT_THRESHOLD = 3       # 반복이 이 횟수에 도달하면 그때 요약 알림 1번만 발송
 
@@ -152,6 +172,17 @@ def parse_args():
     p.add_argument("--no-zone-estimate", action="store_true",
                     help="마커 3개(1개 가림)일 때 평행사변형 근사로 4번째를 추정하는 기능을 끄고, "
                          "예전처럼 4개 다 보여야만 구역을 판정. 추정이 못 미더울 때 검증용")
+    p.add_argument("--no-id-bridge", action="store_true",
+                    help="사람이 잠깐 화면을 벗어나거나 빠르게 움직여도 같은 사람으로 이어붙이는 "
+                         "기능(PersonIdentityMemory)을 끄고, ByteTrack이 매긴 추적 ID를 그대로 "
+                         "씀. 이어붙이기가 엉뚱한 사람끼리 잘못 이어붙이는 등 오작동할 때 대피용"
+                         "(실험적 기능, 2026-09-16 추가)")
+    p.add_argument("--id-bridge-gap-sec", type=float, default=DEFAULT_ID_BRIDGE_GAP_SEC,
+                    help=f"사람이 사라진 뒤 이 시간(초) 안에 새 추적 ID가 나타나면 같은 사람으로 "
+                         f"이어붙임 (기본 {DEFAULT_ID_BRIDGE_GAP_SEC})")
+    p.add_argument("--id-bridge-dist-px", type=float, default=DEFAULT_ID_BRIDGE_DIST_PX,
+                    help=f"마지막 위치에서 이 픽셀 반경 안이어야 같은 사람으로 인정 (기본 "
+                         f"{DEFAULT_ID_BRIDGE_DIST_PX}, 웹캠 해상도·거리에 따라 조정 필요할 수 있음)")
     p.add_argument("--push-url", type=str, default=None,
                     help="위반 '확정' 순간(재발 아님, 새로 걸릴 때만) push_server.py의 /notify로 "
                          "POST 요청. 예: http://localhost:8000/notify. 생략하면 알림 전송 안 함")
@@ -161,9 +192,10 @@ def parse_args():
                          "DEVICE_TOKEN 환경변수로 줘도 됨. service-account.json 필요")
     p.add_argument("--repeat-cooldown-min", type=float, default=DEFAULT_REPEAT_COOLDOWN_MIN,
                     help=f"해제 후 이 시간(분) 안에 같은 위반이 다시 걸리면 반복으로 간주해 "
-                         f"매번 알리지 않고 누적만 함 (기본 {DEFAULT_REPEAT_COOLDOWN_MIN})")
+                         f"클립 저장은 생략(알림은 매번 그대로 발송) (기본 {DEFAULT_REPEAT_COOLDOWN_MIN})")
     p.add_argument("--repeat-threshold", type=int, default=DEFAULT_REPEAT_THRESHOLD,
-                    help=f"반복 횟수가 이 값에 도달하면 그때 요약 알림 1번 발송 (기본 {DEFAULT_REPEAT_THRESHOLD})")
+                    help=f"반복 횟수가 이 값에 도달하면 그때 클립 저장 재개 + 알림 문구에 "
+                         f"반복 횟수 표시 (기본 {DEFAULT_REPEAT_THRESHOLD})")
     p.add_argument("--clip-sec", type=float, default=DEFAULT_CLIP_SEC,
                     help=f"위반 확정 시 저장할 경보 구간 클립 길이(초) (기본 {DEFAULT_CLIP_SEC})")
     p.add_argument("--no-clip", action="store_true",
@@ -305,21 +337,28 @@ def save_clip(frame_buffer, rule, target, now):
 
 def on_violation_confirmed(args, throttle, frame_buffer, rule, target, title, detail, now):
     """위반이 새로 확정된 순간(상승 엣지)에 호출하는 공통 지점.
-    로그(사실 기록)는 항상 남기지만, 클립 저장·알림 발송("무거운 반응")은 RepeatThrottle이
-    공통으로 게이트한다. 안 그러면 사람이 구역을 들락날락할 때 알림은 억제되는데 클립만
-    매번 새로 쓰여서 디스크·프레임에 "녹화 폭탄"이 된다 (2026-09-11 발견·수정) — push_url이
-    없어도(알림 안 쓰는 조합이어도) 게이트가 항상 작동하도록 throttle 평가를 조건 밖으로 뺐다."""
+    로그(사실 기록)는 항상 남긴다. 클립 저장과 알림 발송은 이제 서로 다르게 게이트한다
+    (2026-09-16 정책 변경, 사용자 피드백 — "재감지된 실제 위반은 매번 알려야 안전하다"):
+
+    - **클립 저장은 여전히 RepeatThrottle이 게이트한다** — 안 그러면 사람이 구역을
+      들락날락할 때마다 디스크·프레임에 "녹화 폭탄"이 된다 (2026-09-11 발견·수정 그대로 유지).
+    - **알림(Push/FCM)은 이제 항상 보낸다** — 예전엔 반복 억제 대상이었지만, 실사용해보니
+      "해제됐다가 진짜로 다시 위반이면 폰이 다시 울려야" 안전하다는 게 확인됨. 알림 피로는
+      이제 앱 쪽(자동 해제 N건 배지, 다른 활성 위반 펼치기)에서 완화하므로 발송 자체를
+      억제할 필요가 줄었다. RepeatThrottle의 반복 카운트(note)는 그대로 계산해 문구에는
+      남기되, 발송 여부를 막는 데는 더 이상 쓰지 않는다."""
     log_event("confirmed", rule, target, detail)
 
-    ok, note = throttle.should_notify((rule, target), now)
-    if not ok:
-        return   # 최근에 해제됐다 금방 다시 걸린 반복 -> 클립도 알림도 억제, 로그만 남김
-
+    # should_save_clip()은 내부 반복 횟수 카운터를 건드리는 부수효과가 있으므로 반드시 한
+    # 번만 호출한다 — 두 번 부르면 카운터가 매번 2씩 늘어 "N회마다 요약" 계산이 틀어진다.
+    ok, note = throttle.should_save_clip((rule, target), now)
     full_detail = detail + (f" {note}" if note else "")
-    if not args.no_clip:
+
+    if ok and not args.no_clip:
         clip_path = save_clip(frame_buffer, rule, target, now)
         if clip_path:
             log_event("clip_saved", rule, target, clip_path)
+
     if args.push_url:
         send_push(args.push_url, title, full_detail)
     if args.fcm_token:
@@ -342,13 +381,17 @@ def on_violation_resolved(args, throttle, rule, target, detail, now):
 
 
 class RepeatThrottle:
-    """같은 위반이 해제됐다가 cooldown_min 안에 다시 걸리는 "반복(flapping)"을 억제한다.
-
-    예: 사람이 안전구역을 들락날락하면 위반이 걸렸다 풀렸다 반복되는데, 매번 알림을
-    보내면 관리자가 지쳐서 무시하게 된다(alarm fatigue). 대신:
-      - 오랜만(또는 처음)의 위반은 그대로 알림
-      - 최근 해제됐다가 금방 다시 걸리면 알림 없이 반복 횟수만 누적
-      - 반복이 threshold에 도달하면 그때 "N번째 반복 발생" 요약 알림 1번
+    """같은 위반이 해제됐다가 cooldown_min 안에 다시 걸리는 "반복(flapping)"의 반복 횟수를
+    센다. 원래는 클립 저장뿐 아니라 알림까지 같이 억제했지만(2026-09-11), 실사용해보니
+    "재감지된 실제 위반은 매번 알려야 안전하다"는 게 확인돼 **알림은 이제 매번 보낸다**
+    (2026-09-16 정책 변경, on_violation_confirmed 참고). 알림 피로는 이제 앱 쪽(자동 해제
+    N건 배지, 다른 활성 위반 펼치기)에서 완화한다. 지금 이 클래스가 실제로 게이트하는 건
+    **클립 저장뿐**이다 — 안 그러면 사람이 안전구역을 들락날락할 때마다 클립이 매번 새로
+    쓰여서 디스크·프레임에 "녹화 폭탄"이 된다.
+      - 오랜만(또는 처음)의 위반은 클립도 저장
+      - 최근 해제됐다가 금방 다시 걸리면 클립 없이 반복 횟수만 누적(알림은 그래도 보냄)
+      - 반복이 threshold에 도달하면 그때 클립도 다시 저장하고, 알림 문구에도
+        "(최근 N분 내 M회 반복)"을 덧붙임
     key로 규칙 종류+대상(사람 ID 등)을 조합해서 쓴다 — 예: ("helmet", 3), ("crew", None)."""
 
     def __init__(self, cooldown_sec, threshold):
@@ -357,8 +400,11 @@ class RepeatThrottle:
         self.last_resolved = {}   # key -> 마지막으로 해제된 시각
         self.repeat_count = {}    # key -> 이번 억제 구간 동안 쌓인 반복 횟수
 
-    def should_notify(self, key, now):
-        """위반이 새로 걸린 순간(상승 엣지)에 호출. (보낼지 여부, 안내 문구 또는 None) 반환."""
+    def should_save_clip(self, key, now):
+        """위반이 새로 걸린 순간(상승 엣지)에 호출. (클립을 저장할지 여부, 안내 문구 또는
+        None) 반환 — 2026-09-16까지는 should_notify라는 이름이었지만, 알림은 이제 이
+        반환값과 무관하게 항상 나가고 클립 저장만 게이트하므로 이름을 맞춰 바꿨다.
+        반환값의 note는 클립 여부와 무관하게 알림 문구에 항상 덧붙는다."""
         last = self.last_resolved.get(key)
         if last is None or now - last > self.cooldown_sec:
             self.repeat_count[key] = 0
@@ -416,7 +462,11 @@ class SustainedLatch:
 
 
 class PersonState:
-    """트랙 ID 하나(사람 한 명)의 보호구 착용 상태 이력 + 위반 판정."""
+    """트랙 ID 하나(사람 한 명)의 보호구 착용 상태 이력 + 위반 판정.
+    마커가 안 보여 판정 불가한 프레임(None)은 이력에서 제외하고, latch도 갱신하지 않는다
+    (판정 보류 — ZoneState와 동일 원칙, 2026-09-16 수정). 그 전까지는 "미확인"을 "착용"과
+    똑같이 취급해 해제 타이머를 진행시켜서, 헬멧이 잠깐 화면 밖으로 나가거나 각도상
+    검출이 안 잡히기만 해도 실제로는 계속 미착용인데 위반이 조기에 풀려버리는 문제가 있었다."""
 
     def __init__(self, hold_sec=DEFAULT_HELMET_HOLD_SEC, clear_sec=DEFAULT_HELMET_CLEAR_SEC):
         self.history = deque()   # (t, "착용" | "미착용" | None)
@@ -429,7 +479,9 @@ class PersonState:
         while self.history and now - self.history[0][0] > SMOOTH_SEC:
             self.history.popleft()
         votes = [s for _, s in self.history if s is not None]
-        stable = Counter(votes).most_common(1)[0][0] if votes else "미확인"
+        if not votes:
+            return "미확인", self.latch.latched   # 최근 창에 정보 없음 -> 모름, latch 동결
+        stable = Counter(votes).most_common(1)[0][0]
         violation = self.latch.update(stable == "미착용", now)
         return stable, violation
 
@@ -531,6 +583,68 @@ def box_xyxy(b):
 def foot_point(box):
     x1, y1, x2, y2 = box
     return (x1 + x2) / 2, y2
+
+
+class PersonIdentityMemory:
+    """ByteTrack이 매기는 추적 ID(raw id)가 사람이 잠깐 화면을 벗어나거나 빠르게 움직이면
+    바뀌는 문제를 완화한다 (2026-09-16, 사용자 발견 — 실제 웹캠 테스트에서 ID가 계속 바뀌며
+    위반이 해결 안 됐는데도 "해제"로 잘못 보고되고, 매번 새 사람처럼 타이머가 처음부터
+    다시 도는 문제 확인).
+
+    MarkerMemory("마커가 잠깐 안 보여도 최근 위치를 기억해서 버틴다")와 같은 철학 —
+    완벽한 재식별(ReID)이 아니라 "짧은 순간의 ID 이탈"만 이어붙이는 가벼운 다리(bridge)다.
+    방금(max_gap_sec 이내) 사라진 사람의 마지막 발 위치(foot_point) 근처에 새 raw id가
+    나타나면 같은 사람(canonical id)으로 취급 — 이후 person_states/zone_states/알림의
+    key가 전부 이 canonical id를 쓰므로, 위반 확정→해제 타이머와 이력이 ID 변경을
+    관통해 그대로 이어진다.
+
+    한계: 여러 사람이 겹쳐 있거나 오래(max_gap_sec 이상) 사라지면 못 잡는다 — 그 경우는
+    실제로 새 사람일 수도 있으니 새 canonical id를 새로 발급하는 게 맞다. --no-id-bridge로
+    끄면 예전처럼 raw id를 그대로 canonical id로 쓴다(이 기능이 오작동할 때의 대피용)."""
+
+    def __init__(self, max_gap_sec=2.0, max_dist_px=120):
+        self.max_gap_sec = max_gap_sec
+        self.max_dist_px = max_dist_px
+        self.raw_to_canonical = {}   # raw id -> canonical id (한 번 정해지면 계속 유지)
+        self.canonical_pos = {}      # canonical id -> (foot_point, 마지막으로 본 시각)
+
+    def resolve_frame(self, person_items, now):
+        """이번 프레임의 (raw_id, box) 목록을 (canonical_id, box) 목록으로 바꿔서 반환한다."""
+        used_canonicals = set()
+        resolved = []
+        unresolved = []
+
+        for raw_id, box in person_items:
+            canonical = self.raw_to_canonical.get(raw_id)
+            if canonical is not None and canonical not in used_canonicals:
+                used_canonicals.add(canonical)
+                resolved.append((canonical, box))
+            else:
+                unresolved.append((raw_id, box))
+
+        for raw_id, box in unresolved:
+            foot = foot_point(box)
+            best_canonical, best_dist = None, None
+            for canonical, (last_foot, last_t) in self.canonical_pos.items():
+                if canonical in used_canonicals or now - last_t > self.max_gap_sec:
+                    continue   # 이번 프레임에 이미 다른 raw id가 쓰는 중이거나 너무 오래 사라졌음
+                dist = ((foot[0] - last_foot[0]) ** 2 + (foot[1] - last_foot[1]) ** 2) ** 0.5
+                if dist <= self.max_dist_px and (best_dist is None or dist < best_dist):
+                    best_canonical, best_dist = canonical, dist
+            canonical = best_canonical if best_canonical is not None else raw_id
+            self.raw_to_canonical[raw_id] = canonical
+            used_canonicals.add(canonical)
+            resolved.append((canonical, box))
+
+        for canonical, box in resolved:
+            self.canonical_pos[canonical] = (foot_point(box), now)
+
+        # 오래(30초) 안 보인 canonical은 정리 — person_states 정리 주기와 맞춤
+        stale = [c for c, (_, t) in self.canonical_pos.items() if now - t > 30]
+        for c in stale:
+            del self.canonical_pos[c]
+
+        return resolved
 
 
 def match_helmet_to_persons(person_items, helmet_boxes):
@@ -665,14 +779,18 @@ def main():
           f"보호구 미착용 (확정 {args.helmet_hold}초/해제 {args.helmet_clear}초), "
           + (f"안전구역 침범 (확정 {args.zone_hold}초/해제 {args.zone_clear}초)"
              if zone_enabled else "안전구역 판정 꺼짐"))
+    print(f"ID 이어붙이기(실험적): "
+          + (f"켜짐 (사라진 뒤 {args.id_bridge_gap_sec}초/{args.id_bridge_dist_px}px 안이면 같은 사람)"
+             if not args.no_id_bridge else "꺼짐 (--no-id-bridge, ByteTrack raw id 그대로 사용)"))
     if args.push_url or args.fcm_token:
         channels = []
         if args.push_url:
             channels.append(f"Web Push({args.push_url})")
         if args.fcm_token:
             channels.append(f"FCM(폰 토큰 등록됨, 앞 12자 {args.fcm_token[:12]}...)")
-        print(f"알림: {' + '.join(channels)} | 반복 억제: {args.repeat_cooldown_min}분 안 재발 시 "
-              f"{args.repeat_threshold}회마다 요약 1번")
+        print(f"알림: {' + '.join(channels)} (매 확정마다 발송, 억제 없음) | "
+              f"클립 반복 억제: {args.repeat_cooldown_min}분 안 재발 시 생략, "
+              f"{args.repeat_threshold}회마다 재개")
     print(f"경보 구간 클립: {'끔' if args.no_clip else f'{args.clip_sec}초 -> {CLIP_DIR}/'} | "
           f"이벤트 로그: {EVENTS_LOG_PATH}")
 
@@ -690,9 +808,10 @@ def main():
 def _run(cap, person_model, helmet_model, detector, args, zone_enabled):
     count_history = deque()          # (t, raw_count) — 인원 수 안정화
     crew_rule = SustainedLatch(args.crew_hold, args.crew_clear)
-    person_states = {}               # track_id -> PersonState (보호구)
-    zone_states = {}                 # track_id -> ZoneState (안전구역)
+    person_states = {}               # canonical_id -> PersonState (보호구)
+    zone_states = {}                 # canonical_id -> ZoneState (안전구역)
     marker_memory = MarkerMemory(STALE_SEC, allow_estimate=not args.no_zone_estimate)
+    identity_memory = PersonIdentityMemory(args.id_bridge_gap_sec, args.id_bridge_dist_px)
     prev_t = time.time()
 
     # 위반 확정/해제는 항상 events.jsonl 에 기록되고, 알림은 그중 "새로 걸린 순간"에만 보낸다.
@@ -721,6 +840,11 @@ def _run(cap, person_model, helmet_model, detector, args, zone_enabled):
         person_items = [
             (int(b.id), box_xyxy(b)) for b in person_res[0].boxes if b.id is not None
         ]
+        # ByteTrack의 raw id가 사람이 잠깐 화면을 벗어나거나 빠르게 움직이면 바뀌는 문제를
+        # 이어붙인다 — 이후 모든 로직(헬멧 매칭, 구역 판정, 규칙 엔진, 알림)은 이 canonical
+        # id를 사람 식별자로 쓴다. --no-id-bridge로 끄면 raw id를 그대로 쓴다.
+        if not args.no_id_bridge:
+            person_items = identity_memory.resolve_frame(person_items, now)
 
         helmet_res = helmet_model(frame, conf=HELMET_CONF, verbose=False)
         frame_helmet_status = match_helmet_to_persons(person_items, helmet_res[0].boxes)
