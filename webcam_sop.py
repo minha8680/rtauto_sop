@@ -1,12 +1,16 @@
-"""통합 SOP 미니 데모 — 인원 수(N인 1조) + 사람별 보호구 착용 + 안전구역 침범.
+"""통합 SOP 미니 데모 — 인원 수(N인 1조) + 사람별 보호구(헬멧·보안경) 착용 + 안전구역 침범.
 
-세 모델/검출기를 한 루프에서 돌려 결과를 결합한다.
+네 모델/검출기를 한 루프에서 돌려 결과를 결합한다.
   - person 검출+추적: yolov8n.pt (COCO person) + ByteTrack -> 사람마다 고유 ID
-  - 보호구 검출: models/helmet_v2_best.pt -> helmet / no_helmet 박스
+  - 헬멧 검출: models/helmet_v2_best.pt -> helmet / no_helmet 박스
+  - 보안경 검출: models/glasses_v1_best.pt -> glasses / no_glasses 박스 (2026-09-17 통합,
+    helmet과 완전히 독립된 규칙 — 둘 중 하나만 미착용해도 각각 따로 위반 확정/알림.
+    모델 파일이 없거나 helmet만 쓰고 싶으면 --no-glasses)
   - 안전구역: ArUco 마커 4개로 구역 폴리곤을 매 프레임 재계산 (webcam_zone.py 로직)
 
-"헬멧 박스가 보이면 착용"이 아니라, 각 person 박스 안에 helmet/no_helmet 박스의
-중심점이 들어오는지로 "그 사람이 실제로 썼는가"를 판정한다 (webcam_test.md 한계 1 해결).
+"보호구 박스가 보이면 착용"이 아니라, 각 person 박스 안에 helmet/no_helmet(또는
+glasses/no_glasses) 박스의 중심점이 들어오는지로 "그 사람이 실제로 썼는가"를 판정한다
+(webcam_test.md 한계 1 해결) — 이 매칭 로직(match_ppe_to_persons)은 헬멧·보안경이 공유한다.
 안전구역도 마찬가지로 "화면 좌표 고정"이 아니라 마커 위치 기준으로 재계산한다 —
 착용형 카메라가 움직여도 구역이 따라오고, 마커가 안 보이면 판정 보류로 침묵한다.
 보호구 판정도 동일한 원칙을 따른다 — 각도·거리 문제로 잠깐 helmet/no_helmet 어느 쪽도
@@ -28,9 +32,10 @@
 사람으로 이어붙인다" — 완벽한 재식별은 아니고 짧은 순간의 ID 이탈만 버티는 실험적
 기능이라, 오작동하면 --no-id-bridge로 끄고 예전처럼 raw ID를 그대로 쓸 수 있다.
 
-규칙 3개, 전부 SustainedLatch(지속 시간 채워야 확정/해제)로 처리한다.
+규칙 4개, 전부 SustainedLatch(지속 시간 채워야 확정/해제)로 처리한다.
   - N인 1조: 인원 수 != N 이 지속 -> 위반 / N명 복귀 지속 -> 해제 (기획안 5.6절, 기본 N=2/3초)
-  - 보호구 미착용: 특정 사람이 미착용 상태로 지속 -> 위반 / 착용 복귀 지속 -> 해제 (기본 10초)
+  - 헬멧 미착용: 특정 사람이 미착용 상태로 지속 -> 위반 / 착용 복귀 지속 -> 해제 (기본 10초)
+  - 보안경 미착용: 헬멧과 완전히 독립적으로 동일하게 판정 (기본 10초, --no-glasses로 끌 수 있음)
   - 안전구역 침범: 특정 사람이 구역 안에 지속 -> 위반 / 구역 밖 복귀 지속 -> 해제 (기본 3초)
 
 작업마다 필요 인원 수·지속시간이 다를 수 있어 코드 수정 없이 커맨드라인 인자로 바꾼다:
@@ -55,8 +60,8 @@ push_server.py(Web Push 프로토타입)를 같이 띄워두면 --push-url 로 �
     python webcam_sop.py --fcm-token "$DEVICE_TOKEN"
 
 --push-url과 --fcm-token은 동시에 켜도 되고(둘 다 발송), 규칙별로 앱이 표시할 등급(level)도
-같이 보낸다: crew/zone은 "중대", helmet은 "주의" (기획안 그림4 등급 구분 반영, 재발송/ACK
-스케줄러 자체는 아직 없음 — CLAUDE.md 알림 설계 섹션 참고).
+같이 보낸다: crew/zone은 "중대", helmet/glasses는 "주의" (기획안 그림4 등급 구분 반영,
+재발송/ACK 스케줄러 자체는 아직 없음 — CLAUDE.md 알림 설계 섹션 참고).
 
 FCM은 확정(kind="alert")뿐 아니라 해제(kind="resolved")도 보낸다 — 둘 다 같은 key(rule:target,
 fcm_key() 참고)를 실어서, 앱이 "지금 울리는 경보와 같은 건인지" 맞춰보고 자동으로 알람을
@@ -109,9 +114,11 @@ from ultralytics import YOLO
 
 PERSON_MODEL_PATH = "yolov8n.pt"
 HELMET_MODEL_PATH = "models/helmet_v2_best.pt"
+GLASSES_MODEL_PATH = "models/glasses_v1_best.pt"
 PERSON_CLASS = 0             # COCO 기준 person
 PERSON_CONF = 0.4
 HELMET_CONF = 0.5
+GLASSES_CONF = 0.25          # webcam_glasses.py 단독 테스트에서 검증된 값
 IMGSZ = 480                  # 추론 입력 크기 (작을수록 빠름 -> FPS 상승 -> 추적 안정)
 TRACKER = "trackers/bytetrack_person.yaml"
 
@@ -129,6 +136,9 @@ DEFAULT_CREW_CLEAR_SEC = 3.0
 
 DEFAULT_HELMET_HOLD_SEC = 10.0    # 미착용 위반 확정 지속 시간 (3초는 빠듯해서 10초로 완화)
 DEFAULT_HELMET_CLEAR_SEC = 10.0
+
+DEFAULT_GLASSES_HOLD_SEC = 10.0   # 보안경 미착용 위반 확정/해제 지속 시간 (helmet과 동일하게 시작)
+DEFAULT_GLASSES_CLEAR_SEC = 10.0
 
 DEFAULT_ZONE_HOLD_SEC = 3.0       # 구역 침범 확정 지속 시간 (위험요인, 2인1조와 동일하게 시작)
 DEFAULT_ZONE_CLEAR_SEC = 3.0
@@ -148,7 +158,7 @@ DEFAULT_CLIP_SEC = 10.0            # 위반 확정 시점까지의 최근 N초�
 FCM_PROJECT_ID = "rtauto-sop"
 FCM_SERVICE_ACCOUNT_FILE = "service-account.json"
 FCM_SCOPES = ["https://www.googleapis.com/auth/firebase.messaging"]
-FCM_LEVEL_BY_RULE = {"crew": "중대", "zone": "중대", "helmet": "주의"}   # 기획안 그림4 등급 구분
+FCM_LEVEL_BY_RULE = {"crew": "중대", "zone": "중대", "helmet": "주의", "glasses": "주의"}   
 
 
 def parse_args():
@@ -163,6 +173,13 @@ def parse_args():
                     help=f"보호구 미착용 위반 확정까지 지속 시간(초) (기본 {DEFAULT_HELMET_HOLD_SEC})")
     p.add_argument("--helmet-clear", type=float, default=DEFAULT_HELMET_CLEAR_SEC,
                     help=f"보호구 미착용 위반 해제까지 지속 시간(초) (기본 {DEFAULT_HELMET_CLEAR_SEC})")
+    p.add_argument("--glasses-hold", type=float, default=DEFAULT_GLASSES_HOLD_SEC,
+                    help=f"보안경 미착용 위반 확정까지 지속 시간(초) (기본 {DEFAULT_GLASSES_HOLD_SEC})")
+    p.add_argument("--glasses-clear", type=float, default=DEFAULT_GLASSES_CLEAR_SEC,
+                    help=f"보안경 미착용 위반 해제까지 지속 시간(초) (기본 {DEFAULT_GLASSES_CLEAR_SEC})")
+    p.add_argument("--no-glasses", action="store_true",
+                    help="glasses_v1 모델을 안 쓰고 보안경 판정을 끔 (모델 파일이 없거나 "
+                         "helmet만 확인하고 싶을 때)")
     p.add_argument("--zone-hold", type=float, default=DEFAULT_ZONE_HOLD_SEC,
                     help=f"안전구역 침범 확정까지 지속 시간(초) (기본 {DEFAULT_ZONE_HOLD_SEC})")
     p.add_argument("--zone-clear", type=float, default=DEFAULT_ZONE_CLEAR_SEC,
@@ -429,6 +446,7 @@ except OSError:
     _FONT = _FONT_SMALL = _FONT_BIG = ImageFont.load_default()
 
 HELMET_LABELS = {0: "helmet", 1: "no_helmet"}
+GLASSES_LABELS = {0: "glasses", 1: "no_glasses"}
 
 
 class SustainedLatch:
@@ -484,6 +502,20 @@ class PersonState:
         stable = Counter(votes).most_common(1)[0][0]
         violation = self.latch.update(stable == "미착용", now)
         return stable, violation
+
+
+def carry_forward_violations(states, seen_pids, violation_ids):
+    """이번 프레임에 재검출되지 않은 pid라도, 마지막으로 확인된 위반 상태(latch.latched)가
+    True면 위반 목록에 계속 포함시킨다. helmet_violation_ids/zone_violation_ids는 매 프레임
+    person_items를 순회하며 새로 채워지는데, 헬멧을 쓰려고 손을 머리로 올리는 등 순간적으로
+    person 검출/추적이 끊기면(--*-clear 초와 무관하게) 그 프레임엔 pid가 person_items에
+    아예 없어서 곧바로 위반 목록에서 빠지고 "해제"로 오판되는 버그가 있었다(2026-09-17,
+    사용자 발견 — 헬멧 쓰자마자 즉시 자동해제). 여기서 이어붙여두면 실제 해제는 재검출된
+    뒤 pstate.update()가 clear_sec만큼 "착용"을 확인해야만 일어난다 — 사람이 계속 안 보이면
+    person_states/zone_states 자체가 30초 뒤 정리되면서 그때 비로소 해제된다."""
+    for pid, state in states.items():
+        if pid not in seen_pids and state.latch.latched:
+            violation_ids.add(pid)
 
 
 class ZoneState:
@@ -647,15 +679,18 @@ class PersonIdentityMemory:
         return resolved
 
 
-def match_helmet_to_persons(person_items, helmet_boxes):
-    """helmet/no_helmet 박스 중심이 들어있는 person 박스에 배정.
-    여러 person과 겹치면 가장 작은(가까운) person 박스 우선, 중복 매칭 시 confidence 높은 쪽."""
+def match_ppe_to_persons(person_items, ppe_boxes, labels, positive_label):
+    """보호구(helmet/glasses 등) 박스 중심이 들어있는 person 박스에 배정 — 착용/미착용
+    2클래스 검출기라면 전부 이 함수 하나로 재사용 가능(webcam_test.md 한계 1: "검출=착용"이
+    아니라 person 박스와의 공간 관계로 판정). 여러 person과 겹치면 가장 작은(가까운) person
+    박스 우선, 중복 매칭 시 confidence 높은 쪽. [labels]는 클래스 인덱스->라벨 문자열
+    (예: HELMET_LABELS), [positive_label]은 그중 "착용"에 해당하는 라벨(예: "helmet")."""
     assigned = {pid: None for pid, _ in person_items}   # pid -> (label, conf)
-    for hb in helmet_boxes:
-        hx1, hy1, hx2, hy2 = box_xyxy(hb)
-        cx, cy = (hx1 + hx2) / 2, (hy1 + hy2) / 2
-        label = HELMET_LABELS.get(int(hb.cls[0]), "?")
-        conf = float(hb.conf[0])
+    for pb in ppe_boxes:
+        px1b, py1b, px2b, py2b = box_xyxy(pb)
+        cx, cy = (px1b + px2b) / 2, (py1b + py2b) / 2
+        label = labels.get(int(pb.cls[0]), "?")
+        conf = float(pb.conf[0])
 
         best_pid, best_area = None, None
         for pid, pbox in person_items:
@@ -672,7 +707,7 @@ def match_helmet_to_persons(person_items, helmet_boxes):
 
     out = {}
     for pid, val in assigned.items():
-        out[pid] = "착용" if (val and val[0] == "helmet") else ("미착용" if val else None)
+        out[pid] = "착용" if (val and val[0] == positive_label) else ("미착용" if val else None)
     return out
 
 
@@ -689,14 +724,14 @@ def detect_zone_polygon(detector, frame, memory, now):
     return poly, sorted(current.keys()), status
 
 
-def combined_color(helmet_stat, zone_stat, is_violation):
+def combined_color(helmet_stat, glasses_stat, zone_stat, is_violation):
     """사람 박스/라벨 색: 위반 확정=빨강, 위반 소지(미착용 또는 구역안)=주황,
-    둘 다 정상 확인됨=초록, 둘 다 모름=회색."""
+    전부 정상 확인됨=초록, 전부 모름=회색."""
     if is_violation:
         return (220, 30, 30)
-    if helmet_stat == "미착용" or zone_stat == "안":
+    if helmet_stat == "미착용" or glasses_stat == "미착용" or zone_stat == "안":
         return (230, 150, 0)
-    if helmet_stat == "미확인" and zone_stat == "미확인":
+    if helmet_stat == "미확인" and glasses_stat == "미확인" and zone_stat == "미확인":
         return (140, 140, 140)
     return (0, 170, 0)
 
@@ -709,7 +744,8 @@ CORNER_DOT_COLOR = {
 
 
 def draw_overlay(bgr, zone_poly, zone_status, marker_ids_seen, person_items,
-                  helmet_status, zone_person_status, helmet_violation_ids, zone_violation_ids,
+                  helmet_status, glasses_status, zone_person_status,
+                  helmet_violation_ids, glasses_violation_ids, zone_violation_ids,
                   crew_banner, crew_rgb, zone_enabled):
     img = Image.fromarray(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
     d = ImageDraw.Draw(img)
@@ -729,20 +765,23 @@ def draw_overlay(bgr, zone_poly, zone_status, marker_ids_seen, person_items,
     for pid, box in person_items:
         x1, y1, x2, y2 = [int(v) for v in box]
         h_stat = helmet_status.get(pid, "미확인")
+        g_stat = glasses_status.get(pid, "미확인")
         z_stat = zone_person_status.get(pid, "미확인") if zone_enabled else "미확인"
-        violated = pid in helmet_violation_ids or pid in zone_violation_ids
-        color = combined_color(h_stat, z_stat, violated)
+        violated = pid in helmet_violation_ids or pid in glasses_violation_ids or pid in zone_violation_ids
+        color = combined_color(h_stat, g_stat, z_stat, violated)
 
         tags = []
         if pid in helmet_violation_ids:
             tags.append("헬멧위반")
+        if pid in glasses_violation_ids:
+            tags.append("보안경위반")
         if pid in zone_violation_ids:
             tags.append("구역위반")
         suffix = " " + "/".join(tags) if tags else ""
+        tag = f"ID{pid} 헬멧:{h_stat} 보안경:{g_stat}"
         if zone_enabled:
-            tag = f"ID{pid} 헬멧:{h_stat} 구역:{z_stat}{suffix}"
-        else:
-            tag = f"ID{pid} 헬멧:{h_stat}{suffix}"
+            tag += f" 구역:{z_stat}"
+        tag += suffix
 
         width = 3 if violated else 2
         d.rectangle([x1, y1, x2, y2], outline=color, width=width)
@@ -755,7 +794,10 @@ def draw_overlay(bgr, zone_poly, zone_status, marker_ids_seen, person_items,
     w, h = img.size
     bands = [(crew_banner, crew_rgb, _FONT_BIG, 56)]
     if helmet_violation_ids:
-        text = "보호구 미착용 위반: " + ", ".join(f"ID{i}" for i in sorted(helmet_violation_ids))
+        text = "헬멧 미착용 위반: " + ", ".join(f"ID{i}" for i in sorted(helmet_violation_ids))
+        bands.append((text, (200, 60, 0), _FONT, 26))
+    if glasses_violation_ids:
+        text = "보안경 미착용 위반: " + ", ".join(f"ID{i}" for i in sorted(glasses_violation_ids))
         bands.append((text, (200, 60, 0), _FONT, 26))
     if zone_enabled and zone_violation_ids:
         text = "안전구역 침범: " + ", ".join(f"ID{i}" for i in sorted(zone_violation_ids))
@@ -776,7 +818,9 @@ def main():
     args = parse_args()
     zone_enabled = not args.no_zone
     print(f"설정: {args.crew}인 1조 (확정 {args.crew_hold}초/해제 {args.crew_clear}초), "
-          f"보호구 미착용 (확정 {args.helmet_hold}초/해제 {args.helmet_clear}초), "
+          f"헬멧 미착용 (확정 {args.helmet_hold}초/해제 {args.helmet_clear}초), "
+          + (f"보안경 미착용 (확정 {args.glasses_hold}초/해제 {args.glasses_clear}초), "
+             if not args.no_glasses else "보안경 판정 꺼짐(--no-glasses), ")
           + (f"안전구역 침범 (확정 {args.zone_hold}초/해제 {args.zone_clear}초)"
              if zone_enabled else "안전구역 판정 꺼짐"))
     print(f"ID 이어붙이기(실험적): "
@@ -796,19 +840,21 @@ def main():
 
     person_model = YOLO(PERSON_MODEL_PATH)
     helmet_model = YOLO(HELMET_MODEL_PATH)
+    glasses_model = YOLO(GLASSES_MODEL_PATH) if not args.no_glasses else None
     detector = cv2.aruco.ArucoDetector(ARUCO_DICT, cv2.aruco.DetectorParameters())
 
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("카메라를 열 수 없습니다.")
         return
-    _run(cap, person_model, helmet_model, detector, args, zone_enabled)
+    _run(cap, person_model, helmet_model, glasses_model, detector, args, zone_enabled)
 
 
-def _run(cap, person_model, helmet_model, detector, args, zone_enabled):
+def _run(cap, person_model, helmet_model, glasses_model, detector, args, zone_enabled):
     count_history = deque()          # (t, raw_count) — 인원 수 안정화
     crew_rule = SustainedLatch(args.crew_hold, args.crew_clear)
-    person_states = {}               # canonical_id -> PersonState (보호구)
+    person_states = {}               # canonical_id -> PersonState (헬멧)
+    glasses_states = {}              # canonical_id -> PersonState (보안경, helmet과 별개 규칙)
     zone_states = {}                 # canonical_id -> ZoneState (안전구역)
     marker_memory = MarkerMemory(STALE_SEC, allow_estimate=not args.no_zone_estimate)
     identity_memory = PersonIdentityMemory(args.id_bridge_gap_sec, args.id_bridge_dist_px)
@@ -819,6 +865,7 @@ def _run(cap, person_model, helmet_model, detector, args, zone_enabled):
     # 누적하다 threshold 넘으면 요약 1번만
     prev_crew_violation = False
     prev_helmet_violation_ids = set()
+    prev_glasses_violation_ids = set()
     prev_zone_violation_ids = set()
     repeat_throttle = RepeatThrottle(args.repeat_cooldown_min * 60, args.repeat_threshold)
     frame_buffer = FrameBuffer(args.clip_sec)
@@ -847,7 +894,13 @@ def _run(cap, person_model, helmet_model, detector, args, zone_enabled):
             person_items = identity_memory.resolve_frame(person_items, now)
 
         helmet_res = helmet_model(frame, conf=HELMET_CONF, verbose=False)
-        frame_helmet_status = match_helmet_to_persons(person_items, helmet_res[0].boxes)
+        frame_helmet_status = match_ppe_to_persons(person_items, helmet_res[0].boxes, HELMET_LABELS, "helmet")
+
+        if glasses_model is not None:
+            glasses_res = glasses_model(frame, conf=GLASSES_CONF, verbose=False)
+            frame_glasses_status = match_ppe_to_persons(person_items, glasses_res[0].boxes, GLASSES_LABELS, "glasses")
+        else:
+            frame_glasses_status = {}
 
         if zone_enabled:
             zone_poly, marker_ids_seen, zone_corner_status = detect_zone_polygon(detector, frame, marker_memory, now)
@@ -863,15 +916,22 @@ def _run(cap, person_model, helmet_model, detector, args, zone_enabled):
         stable_count = Counter(c for _, c in count_history).most_common(1)[0][0]
         crew_violation = crew_rule.update(stable_count != args.crew, now)
 
-        # 사람별 보호구 + 안전구역 상태 갱신
-        helmet_status, zone_status = {}, {}
-        helmet_violation_ids, zone_violation_ids = set(), set()
+        # 사람별 보호구(헬멧/보안경) + 안전구역 상태 갱신
+        helmet_status, glasses_status, zone_status = {}, {}, {}
+        helmet_violation_ids, glasses_violation_ids, zone_violation_ids = set(), set(), set()
         for pid, box in person_items:
             pstate = person_states.setdefault(pid, PersonState(args.helmet_hold, args.helmet_clear))
             h_stable, h_violated = pstate.update(frame_helmet_status.get(pid), now)
             helmet_status[pid] = h_stable
             if h_violated:
                 helmet_violation_ids.add(pid)
+
+            if glasses_model is not None:
+                gstate = glasses_states.setdefault(pid, PersonState(args.glasses_hold, args.glasses_clear))
+                g_stable, g_violated = gstate.update(frame_glasses_status.get(pid), now)
+                glasses_status[pid] = g_stable
+                if g_violated:
+                    glasses_violation_ids.add(pid)
 
             if zone_enabled:
                 zstate = zone_states.setdefault(pid, ZoneState(args.zone_hold, args.zone_clear))
@@ -886,8 +946,19 @@ def _run(cap, person_model, helmet_model, detector, args, zone_enabled):
                 if z_violated:
                     zone_violation_ids.add(pid)
 
+        # 이번 프레임에 재검출 안 된 사람(occlusion, 추적 끊김)의 기존 위반은 그대로 이어감 —
+        # --helmet-clear/--glasses-clear/--zone-clear 하이스터리시스를 건너뛰고 즉시 해제되는 걸 막는다.
+        seen_pids = {pid for pid, _ in person_items}
+        carry_forward_violations(person_states, seen_pids, helmet_violation_ids)
+        if glasses_model is not None:
+            carry_forward_violations(glasses_states, seen_pids, glasses_violation_ids)
+        if zone_enabled:
+            carry_forward_violations(zone_states, seen_pids, zone_violation_ids)
+
         for pid in [p for p, s in person_states.items() if now - s.last_seen > 30]:
             del person_states[pid]
+        for pid in [p for p, s in glasses_states.items() if now - s.last_seen > 30]:
+            del glasses_states[pid]
         for pid in [p for p, s in zone_states.items() if now - s.last_seen > 30]:
             del zone_states[pid]
 
@@ -906,7 +977,10 @@ def _run(cap, person_model, helmet_model, detector, args, zone_enabled):
                                     "중대 편차 발생", f"{args.crew}인 1조 위반", now)
         for pid in helmet_violation_ids - prev_helmet_violation_ids:
             on_violation_confirmed(args, repeat_throttle, frame_buffer, "helmet", pid,
-                                    "보호구 미착용", f"작업자 ID{pid} 미착용 지속", now)
+                                    "보호구 미착용(헬멧)", f"작업자 ID{pid} 헬멧 미착용 지속", now)
+        for pid in glasses_violation_ids - prev_glasses_violation_ids:
+            on_violation_confirmed(args, repeat_throttle, frame_buffer, "glasses", pid,
+                                    "보호구 미착용(보안경)", f"작업자 ID{pid} 보안경 미착용 지속", now)
         for pid in zone_violation_ids - prev_zone_violation_ids:
             on_violation_confirmed(args, repeat_throttle, frame_buffer, "zone", pid,
                                     "안전구역 침범", f"작업자 ID{pid} 구역 내 위치", now)
@@ -916,18 +990,23 @@ def _run(cap, person_model, helmet_model, detector, args, zone_enabled):
                                    f"{args.crew}인 1조 위반 해제", now)
         for pid in prev_helmet_violation_ids - helmet_violation_ids:
             on_violation_resolved(args, repeat_throttle, "helmet", pid,
-                                   f"작업자 ID{pid} 착용 복귀", now)
+                                   f"작업자 ID{pid} 헬멧 착용 복귀", now)
+        for pid in prev_glasses_violation_ids - glasses_violation_ids:
+            on_violation_resolved(args, repeat_throttle, "glasses", pid,
+                                   f"작업자 ID{pid} 보안경 착용 복귀", now)
         for pid in prev_zone_violation_ids - zone_violation_ids:
             on_violation_resolved(args, repeat_throttle, "zone", pid,
                                    f"작업자 ID{pid} 구역 밖 복귀", now)
 
         prev_crew_violation = crew_violation
         prev_helmet_violation_ids = set(helmet_violation_ids)
+        prev_glasses_violation_ids = set(glasses_violation_ids)
         prev_zone_violation_ids = set(zone_violation_ids)
 
         annotated = draw_overlay(
             frame, zone_poly_i, zone_corner_status, marker_ids_seen, person_items,
-            helmet_status, zone_status, helmet_violation_ids, zone_violation_ids,
+            helmet_status, glasses_status, zone_status,
+            helmet_violation_ids, glasses_violation_ids, zone_violation_ids,
             crew_banner, crew_rgb, zone_enabled,
         )
 

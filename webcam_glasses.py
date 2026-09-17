@@ -3,7 +3,7 @@ import cv2
 
 # 보안경 착용/미착용 검출 모델 (glasses_v1). 범용 테스트로 되돌리려면 "yolov8n.pt"
 MODEL_PATH = "models/glasses_v1_best.pt"
-CONF = 0.25  # confidence 임계값 — 오탐 많으면 올리고, 미탐 많으면 내리기
+CONF = 0.20  # confidence 임계값 — 오탐 많으면 올리고, 미탐 많으면 내리기
 
 model = YOLO(MODEL_PATH)
 

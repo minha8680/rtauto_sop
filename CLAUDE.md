@@ -120,10 +120,11 @@ docs/<name>/            (results.csv, results.png, confusion_matrix.png → 커�
 ```
 rtauto_sop/
 ├── webcam_sop.py        # ★ 메인 통합 데모 (= 감시단원 채널 처리기)
-│                        #   person+helmet_v2+ArUco 구역을 한 루프에서. 3규칙:
-│                        #   N인1조(3초) / 보호구 미착용(10초) / 안전구역 침범(3초)
-│                        #   --crew, --*-hold, --no-zone, --push-url, --fcm-token, --id-bridge-*
-│                        #   로 파라미터화 (--no-id-bridge로 추적 ID 이어붙이기 끌 수 있음).
+│                        #   person+helmet_v2+glasses_v1+ArUco 구역을 한 루프에서. 4규칙:
+│                        #   N인1조(3초) / 헬멧 미착용(10초) / 보안경 미착용(10초) / 안전구역 침범(3초)
+│                        #   헬멧·보안경은 완전히 독립 규칙(match_ppe_to_persons 매칭 로직 공유)
+│                        #   --crew, --*-hold, --no-zone, --no-glasses, --push-url, --fcm-token,
+│                        #   --id-bridge-* 로 파라미터화 (--no-id-bridge로 추적 ID 이어붙이기 끌 수 있음).
 │                        #   위반 확정/해제는 on_violation_confirmed/resolved 공통 지점을
 │                        #   거쳐 events.jsonl 기록 + clips/ 클립 저장 + (설정 시) Web Push/FCM 발송
 │                        #   — 새 규칙 추가돼도 이 두 함수만 호출하면 전부 자동으로 따라옴
@@ -139,7 +140,7 @@ rtauto_sop/
 │
 │   ── 아래는 단계별 검증용으로 남겨둔 단일 기능 스크립트 (통합본은 webcam_sop.py) ──
 ├── webcam_helmet.py     # 안전모 착용/미착용만
-├── webcam_glasses.py    # 보안경 착용/미착용만 (glasses_v1, 아직 webcam_sop.py 미통합)
+├── webcam_glasses.py    # 보안경 착용/미착용만 (glasses_v1, webcam_sop.py에 통합 완료·이건 단독 검증용)
 ├── webcam_person.py     # 인원 수+추적+2인1조 규칙만
 ├── webcam_zone.py       # 안전구역 침범만 (MarkerMemory 원본 구현)
 ├── debug_aruco.py       # 마커 인식 자체만 진단 (코드 vs 조명/거리 문제 분리용)
@@ -197,14 +198,16 @@ rtauto_sop/
 
 ## 프로젝트 완성도 (현실 체크)
 
-**완료**: **감시단원 카메라 채널의 판정 항목 3개 전부**(N인 1조 / 보호구 착용 / 안전구역 침범)를
-`webcam_sop.py` 하나로 통합. 안전구역은 알고리즘 **개념 검증(PoC)** 수준. 실제로 있는 것:
+**완료**: **감시단원 카메라 채널의 판정 항목 4개 전부**(N인 1조 / 헬멧 착용 / 보안경 착용 /
+안전구역 침범)를 `webcam_sop.py` 하나로 통합. 안전구역은 알고리즘 **개념 검증(PoC)** 수준.
+실제로 있는 것:
 
-- helmet_v2, glasses_v1 검출 모델 (재사용 가능한 핵심 자산 — glasses_v1은 아직 `webcam_sop.py`
-  미통합, 단독 스크립트(`webcam_glasses.py`)로만 검증됨)
+- helmet_v2, glasses_v1 검출 모델 (재사용 가능한 핵심 자산 — 둘 다 `webcam_sop.py` 통합
+  완료, 2026-09-17. **다만 glasses_v1은 실물 풀페이스형 고글 인식에 실패**해 현장 스타일에
+  맞는 데이터 보강이 다음 과제로 남음 — 아래 "관리자 폰" 위쪽 glasses_v1 섹션 참고)
 - Colab 학습 파이프라인 (glasses_v1으로 재사용 검증됨 — 클래스만 다른 데이터셋 재활용에 효과적)
-- person 검출 + ByteTrack 추적 + 공간 매칭(helmet↔person) + `SustainedLatch` 규칙 패턴
-  (지속시간 확정/해제, 재사용되는 핵심 로직)
+- person 검출 + ByteTrack 추적 + 공간 매칭(`match_ppe_to_persons`, helmet·glasses 공유) +
+  `SustainedLatch` 규칙 패턴 (지속시간 확정/해제, 재사용되는 핵심 로직)
 - ArUco 마커로 "카메라가 움직여도 구역을 다시 찾는" 방식 — 웹캠에서 동작 검증됨
 - Web Push 알림 프로토타입 — 구독 → 위반 확정 시 실제 브라우저 알림까지 경로 검증됨.
   반복(flapping) 억제는 클립 저장에만 적용(2026-09-16, 알림은 매번 발송 — 아래 알림 설계 참고)
@@ -268,9 +271,9 @@ HTTPS/MDM 문제를 우회한 셈(네이티브 앱은 브라우저 Push API 제�
 - 필요한 것: Firebase 서비스 계정 키(`service-account.json`, gitignore) + 앱이 발급한
   기기 토큰(`DEVICE_TOKEN` 환경변수) — 둘 다 이 저장소엔 없고 로컬/환경변수로만 존재
 - **`webcam_sop.py`에 연결 완료(2026-09-15)** — `--fcm-token`(또는 `DEVICE_TOKEN` 환경변수)을
-  주면 3규칙(N인1조/보호구/안전구역) 위반이 실제로 확정될 때마다 `on_violation_confirmed`가
+  주면 4규칙(N인1조/헬멧/보안경/안전구역) 위반이 실제로 확정될 때마다 `on_violation_confirmed`가
   `send_fcm()`을 호출해 자동으로 폰에 알림이 간다. `--push-url`과 동시에 켤 수 있고(둘 다 발송),
-  규칙별 등급(`FCM_LEVEL_BY_RULE`: crew/zone=중대, helmet=주의)도 같이 보내 앱의 등급 배지에 반영됨.
+  규칙별 등급(`FCM_LEVEL_BY_RULE`: crew/zone=중대, helmet/glasses=주의)도 같이 보내 앱의 등급 배지에 반영됨.
   RepeatThrottle 게이트도 Web Push와 동일하게 적용(반복 위반 시 억제).
   **2026-09-16 실제 웹캠으로 검증 완료** — 그 과정에서 PersonState "미확인" 처리 버그도 발견·수정(아래)
 - **위반 해제 시 폰 알람 자동 종료(2026-09-15 완료, 앱 쪽도 같이 수정)** — 기획안 5.6절
@@ -330,8 +333,9 @@ HTTPS/MDM 문제를 우회한 셈(네이티브 앱은 브라우저 Push API 제�
 
 ```bash
 # ★ 메인: 감시단원 채널 통합 데모 ('q'로 종료) — 로컬 CPU
-python webcam_sop.py                    # 3규칙 전부 (마커 준비됐을 때)
+python webcam_sop.py                    # 4규칙 전부 (마커 준비됐을 때)
 python webcam_sop.py --no-zone           # 마커 없으면 안전구역만 끄고 실행
+python webcam_sop.py --no-glasses        # glasses_v1 없이 헬멧만 판정
 python webcam_sop.py --crew 3 --zone-hold 5      # 파라미터 조정 (--help 참고)
 
 # Web Push 알림 연동 (터미널 2개 필요)
@@ -466,6 +470,43 @@ Roboflow 다운로드가 로컬에서 다시 필요하면 그 절차를 참고�
   안 된 다른 위반이 있으면 그걸 위해 알람을 다시 켬(`rtauto_sop_android`, 같은 세션에서
   Kotlin 컴파일 확인). 알림 피로는 이제 앱 쪽 안전장치(자동 해제 N건 배지, 다른 활성 위반
   펼치기, 알림 그룹 요약)로 해결 — 발송 억제로 해결하지 않는 쪽으로 방향 전환
+- [x] **버그 수정(2026-09-17, 사용자 발견)**: `--helmet-clear`/`--zone-clear`를 몇 초로
+  줘도 헬멧을 다시 쓰자마자 바로 "자동해제"가 뜨는 문제. 원인은 `SustainedLatch`가 아니라
+  `helmet_violation_ids`/`zone_violation_ids`가 매 프레임 `person_items`(이번 프레임에
+  검출된 사람)만 순회해 다시 채워지던 구조 — 헬멧을 쓰려고 손을 머리로 올리다 person 검출/
+  추적이 한 프레임이라도 끊기면, 헬멧 판정과 무관하게 그 pid가 그냥 목록에서 빠져 즉시
+  "해제"로 오판됐음(`--*-clear` 하이스터리시스 자체를 건너뜀). `carry_forward_violations()`
+  추가 — 이번 프레임에 재검출 안 된 pid라도 마지막 `latch.latched`가 True면 위반 목록에
+  이어서 포함시키고, 실제 해제는 재검출 후 `pstate.update()`가 `clear_sec`만큼 "착용"을
+  확인해야만 일어나게 함. 계속 안 보이면 기존 30초 정리 로직으로 그때 비로소 해제됨. 단위
+  테스트로 (1)순간적으로 안 보여도 위반 유지 (2)clear_sec 다 안 채우면 유지 (3)clear_sec
+  채우면 정상 해제 (4)person_states에서 정리된 pid는 대상에서 빠짐 4가지 검증
+- [ ] **사람 부재 처리 설계 (2026-09-17, 논의만 하고 보류 — 정책 질문은 현장 도입 여부
+  정해지면 재검토)**: `carry_forward_violations()`가 "순간적으로 안 보임"만 다루는데,
+  실제로는 성격이 다른 두 상황이 더 있음이 논의됨 — (1) 작업자 한 명이 화장실 등으로
+  몇십 초~몇 분 자리를 비움(개별 부재), (2) 감시 카메라 자체가 다른 곳을 보거나 가려져서
+  `person_items`가 통째로 0명이 됨(시스템적 부재, 특정 인물이 아니라 전체가 안 보임 — 몇
+  명이 한꺼번에 사라졌는지로 (1)/(2) 구분 가능). 설계 방향: "모름" 상태를 경과 시간에 따라
+  3단계로(즉시 무시 → "자리비움"으로 표시하되 알림은 끔 → 오래 지속되면 추적 자체 포기)
+  나누고, (2)는 개별 위반 판정이 아니라 "카메라 시야 이상" 같은 별도 종류의 신호(heartbeat
+  개념, 아래 "아직 없는 것" 목록의 heartbeat 로직과 연결됨)로 분리해서 다뤄야 한다는 데까지
+  논의함. **구현 보류, 아래 정책적 질문에 대한 답이 있어야 착수 가능**:
+  1. 개인 자리비움을 "정상"으로 봐줄 유예시간(몇 분?)
+  2. 자리비움에서 복귀했을 때 이전 위반 판정을 이어갈지, 모른다로 보고 새로 판정할지
+  3. 카메라 시야 이상을 관리자 폰에도 FCM으로 알릴지, 화면 배너로만 표시할지
+  세 질문 모두 "지금 급하게 정할 필요 없고, 현장 도입 여부 따져서 나중에 결정" — 사용자 판단
+- [x] **glasses_v1을 webcam_sop.py에 통합 (2026-09-17 완료)** — helmet과 완전히 독립된
+  네 번째 규칙으로 추가(`--glasses-hold`/`--glasses-clear`/`--no-glasses`). 매칭 로직을
+  `match_helmet_to_persons`→`match_ppe_to_persons(person_items, boxes, labels, positive_label)`로
+  일반화해 helmet·glasses가 공유(라벨 딕셔너리와 "착용"에 해당하는 라벨만 다르게 넘김).
+  `PersonState`도 헬멧 전용이 아니라 그대로 재사용(hold/clear 각각 별도 인자로 분리).
+  `combined_color`/`draw_overlay`에 보안경 상태·위반 태그·배너 추가. `FCM_LEVEL_BY_RULE`에
+  `glasses: "주의"`(helmet과 동급) 추가. 단위 테스트로 (1)같은 매칭 함수가 helmet/glasses
+  라벨 조합 모두에서 정확히 동작 (2)안 겹치는 사람은 None (3)FCM 등급 (4)`--no-glasses`/
+  `--glasses-hold`/`--glasses-clear` 파싱 검증 — 실제 웹캠 통합 동작 확인은 다음 단계.
+  **실물 검증에서 한계 발견**: 지금 쓰는 실물 보안고글(풀페이스 단일렌즈형)과 그 사진 프린트
+  둘 다 인식 실패 — `docs/glasses_v1/metrics.md` "다음 단계" 3번 참고, 데이터셋 보강 필요
+  가능성. `--no-glasses`로 끄면 예전처럼 헬멧+구역만으로 계속 쓸 수 있음
 - [ ] (선택) 알림 등급별 차등 발송 — 위 "알림 설계" 섹션 참고. 서버 쪽 스케줄러·ACK까지
   필요해 규모가 큼, 지금 급하지 않음
 - [ ] (장비 입고 후) RTSP 2채널 수신 + 현장 재튜닝 + GPU 동시 부하 검증
