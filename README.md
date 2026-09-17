@@ -147,23 +147,34 @@ STT 후 키워드 규칙으로 의도를 분류해 SOP를 조회하고 TTS로 �
 
 가중치 파일(`*.pt`)은 용량 문제로 저장소에 포함하지 않습니다 (로컬 `models/` · Google Drive 보관).
 
-### 학습 결과 — 보안경 착용/미착용 검출 (glasses_v1)
+### 학습 결과 — 보안경 착용/미착용 검출 (glasses_v1 → glasses_v2)
 
-helmet과 같은 "보호구 착용" 항목의 두 번째 대상입니다. 이번엔 학습 전에 클래스 균형부터
-확인(Goggles 4,188 : NO-Goggles 4,092, 약 1:1)하고 시작해 **helmet_v1처럼 실패 없이 첫
-시도에 바로 성공**했습니다.
+helmet과 같은 "보호구 착용" 항목의 두 번째 대상입니다. 처음(glasses_v1)엔 학습 전에 클래스
+균형부터 확인(Goggles 4,188 : NO-Goggles 4,092, 약 1:1)하고 시작해 지표상으로는 성공했지만,
+**실물 검증에서 완전히 실패**했습니다 — 실제 사용 중인 풀페이스 단일렌즈형 보안고글이
+실물로도 프린트로도 전혀 인식되지 않았습니다(conf 0.01까지 낮춰도 0건). 원인은 데이터셋
+클래스명이 "Goggles"였음에도 실제 이미지가 안경형 위주였던 것으로 추정됩니다.
 
-| 지표 | 값 |
-|---|---|
-| 데이터셋 | Roboflow PPE Combined Model(44,002장, CC BY 4.0)에서 Goggles/NO-Goggles만 필터링 |
-| mAP@50 | **0.97** |
-| 착용 검출률 (recall) | **0.98** |
-| 미착용 검출률 (recall) | **0.95** |
+그래서 다른 데이터셋(`seafty_goggles`)으로 재학습한 **glasses_v2**로 교체했습니다. 이번엔
+클래스명만 보지 않고 (1) Roboflow API로 정확한 인스턴스 수 조회 (2) 여러 후보가 사실은 같은
+원본 데이터인지 확인 (3) 대표 이미지로 실제 스타일 확인, 이 세 단계를 거쳐 데이터셋을
+골랐습니다.
 
-- 상세: [`docs/glasses_v1/metrics.md`](docs/glasses_v1/metrics.md)
-- **`webcam_sop.py`(감시단원 채널 통합 데모)에 통합 완료(2026-09-17)** — helmet과 완전히
-  독립된 규칙으로 추가했다(헬멧·보안경 둘 중 하나만 미착용해도 각각 별도로 위반 확정/알림).
-  `webcam_glasses.py`는 문제 분리용 단독 테스트 스크립트로 계속 남겨둠.
+| 지표 | glasses_v1 | **glasses_v2** |
+|---|---|---|
+| 데이터셋 | PPE Combined Model 44,002장 중 Goggles/NO-Goggles | seafty_goggles 9,149장 중 goggles/no_goggles (spec 제외) |
+| mAP@50 | 0.97 | **0.97** |
+| 착용 검출률 (recall) | 0.98 | **0.97** |
+| 미착용 검출률 (recall) | 0.95 | **0.94** |
+| **실물 풀페이스 고글 검증** | **실패 (0건)** | **성공 (goggles 0.41)** |
+
+- 상세: [`docs/glasses_v1/metrics.md`](docs/glasses_v1/metrics.md), [`docs/glasses_v2/metrics.md`](docs/glasses_v2/metrics.md)
+- **`webcam_sop.py`(감시단원 채널 통합 데모)에 glasses_v2로 통합 완료(2026-09-17)** — helmet과
+  완전히 독립된 규칙으로 추가했다(헬멧·보안경 둘 중 하나만 미착용해도 각각 별도로 위반 확정/알림).
+  `webcam_glasses.py`도 glasses_v2로 전환, 문제 분리용 단독 테스트 스크립트로 계속 남겨둠.
+- glasses_v2 학습부터는 Colab 세션이 끊겨도 이어서 학습할 수 있도록 Google Drive에 직접
+  체크포인트를 저장(`save_period=10`)하고 재실행 시 `resume=True`로 자동 이어받는 방식을
+  도입했습니다.
 
 ### 웹캠 테스트에서 확인한 것
 
@@ -177,7 +188,7 @@ helmet과 같은 "보호구 착용" 항목의 두 번째 대상입니다. 이번
 
 ### 통합 데모 — 감시단원 채널 4규칙 (`webcam_sop.py`)
 
-person 검출+추적, helmet_v2, glasses_v1, ArUco 구역 인식을 한 루프에서 결합했습니다. 규칙
+person 검출+추적, helmet_v2, glasses_v2, ArUco 구역 인식을 한 루프에서 결합했습니다. 규칙
 4개 모두 **지속 시간을 채워야 확정되고, 정상 복귀도 지속돼야 해제**되는 방식(기획안 5.6절)입니다.
 
 | 규칙 | 조건 | 기본 지속시간 |
@@ -201,7 +212,7 @@ person 검출+추적, helmet_v2, glasses_v1, ArUco 구역 인식을 한 루프�
 ```bash
 python webcam_sop.py --crew 3 --crew-hold 5 --helmet-hold 15 --glasses-hold 15 --zone-hold 5
 python webcam_sop.py --no-zone          # 마커를 준비 못 했을 때 안전구역만 끄기
-python webcam_sop.py --no-glasses       # glasses_v1 모델 없이 헬멧만 판정
+python webcam_sop.py --no-glasses       # glasses_v2 모델 없이 헬멧만 판정
 ```
 
 ### 안전구역을 "화면 좌표"가 아닌 "실세계 기준"으로 잡는 법
@@ -331,7 +342,7 @@ python predict.py           # test 이미지 폴더 일괄 추론 → runs/ 에 
 | `webcam_helmet.py`, `webcam_glasses.py`, `webcam_person.py`, `webcam_zone.py` | 단계별 검증용 단일 기능 스크립트 |
 | `debug_aruco.py` | 마커 인식 진단 (코드 문제 vs 조명·거리 문제 분리) |
 | `predict.py` | 학습 가중치로 test 이미지 일괄 추론 |
-| `docs/helmet_v1/`, `docs/helmet_v2/`, `docs/glasses_v1/` | 학습 결과 지표·그래프·웹캠 테스트 평가 |
+| `docs/helmet_v1/`, `docs/helmet_v2/`, `docs/glasses_v1/`, `docs/glasses_v2/` | 학습 결과 지표·그래프·웹캠 테스트 평가 |
 
 > `main.py` 자리는 비워둠 — 작업자/감시단원 2채널을 합친 파이프라인이 생기면 그것이 진입점.
 > 데이터셋 다운로드·로컬 학습 스크립트는 없음 — 학습은 전부 Colab에서 진행 (위 절차 참고).

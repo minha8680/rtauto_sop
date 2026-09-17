@@ -3,7 +3,7 @@
 네 모델/검출기를 한 루프에서 돌려 결과를 결합한다.
   - person 검출+추적: yolov8n.pt (COCO person) + ByteTrack -> 사람마다 고유 ID
   - 헬멧 검출: models/helmet_v2_best.pt -> helmet / no_helmet 박스
-  - 보안경 검출: models/glasses_v1_best.pt -> glasses / no_glasses 박스 (2026-09-17 통합,
+  - 보안경 검출: models/glasses_v2_best.pt -> glasses / no_glasses 박스 (2026-09-17 통합,
     helmet과 완전히 독립된 규칙 — 둘 중 하나만 미착용해도 각각 따로 위반 확정/알림.
     모델 파일이 없거나 helmet만 쓰고 싶으면 --no-glasses)
   - 안전구역: ArUco 마커 4개로 구역 폴리곤을 매 프레임 재계산 (webcam_zone.py 로직)
@@ -114,7 +114,7 @@ from ultralytics import YOLO
 
 PERSON_MODEL_PATH = "yolov8n.pt"
 HELMET_MODEL_PATH = "models/helmet_v2_best.pt"
-GLASSES_MODEL_PATH = "models/glasses_v1_best.pt"
+GLASSES_MODEL_PATH = "models/glasses_v2_best.pt"
 PERSON_CLASS = 0             # COCO 기준 person
 PERSON_CONF = 0.4
 HELMET_CONF = 0.5
