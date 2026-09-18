@@ -1,0 +1,98 @@
+# glove_v1 — 장갑 착용/미착용 2클래스 학습 결과 (베이스라인)
+
+세정기 작업에 쓰일 실제 장갑·공구 영상이 아직 없어(현장 미방문), 공개 데이터셋으로 먼저
+베이스라인을 잡아둔 결과. **담당 카메라는 작업자 바디캠(0.8m 이내)** — 감시단원 채널
+(`webcam_sop.py`)에는 통합하지 않는다(카메라 2채널 표 참고). 작업자 채널 처리기가 아직
+없어 이 결과는 모델 자산으로만 우선 확보해 둔다.
+
+## 학습 설정
+
+| 항목 | 값 |
+|---|---|
+| 환경 | Google Colab GPU (T4) |
+| 모델 | `yolov8n.pt` fine-tuning (glasses_v3와 달리 warm start 아님 — 첫 학습) |
+| 데이터셋 | Roboflow [`safety-gloves-xbnf8`](https://universe.roboflow.com/roboflow-universe-projects/safety-gloves-xbnf8) v5 (10,459장) |
+| 클래스 | 2개: `Gloves`(착용), `NO-Gloves`(미착용) — 원본부터 2클래스라 재매핑 불필요 |
+| epochs | 50 |
+| 체크포인트 | glasses_v2/v3와 동일한 구조 — `save_period=10` + Google Drive 직접 저장(`project=`) + `resume=True` 자동 이어학습 |
+
+## 클래스 균형 (원본)
+
+| 클래스 | 인스턴스 수 |
+|---|---|
+| Gloves | 4,669 |
+| NO-Gloves | 6,135 |
+
+- 약 1 : 1.31 — helmet_v2(1,339:3,913, 착용 쪽이 많음)와 반대로 미착용 쪽이 더 많지만,
+  helmet_v1이 실패했던 수준(16~64개)과는 비교가 안 될 만큼 양쪽 다 충분함.
+
+## 전체 지표 (epoch 50)
+
+| 지표 | 값 |
+|---|---|
+| Precision | 0.897 |
+| Recall | 0.884 |
+| mAP@50 | **0.933** |
+| mAP@50-95 | 0.450 |
+
+## 클래스별 (confusion matrix 기준)
+
+| 클래스 | 인스턴스(예측 기준 합) | recall |
+|---|---|---|
+| Gloves (착용) | 858 (실제) | **0.930** (798/858) |
+| NO-Gloves (미착용) | 1,258 (실제) | **0.903** (1136/1258) |
+
+- Gloves → NO-Gloves 오분류: 1건. NO-Gloves → Gloves 오분류: 0건 (두 클래스를 서로 헷갈리는
+  경우는 거의 없음)
+- 미검출(→background): Gloves 143건, NO-Gloves 217건 — 오분류보다 **놓치는 쪽이 대부분의
+  오차**를 차지함(장갑을 낀 손의 다양한 포즈·각도·가림 때문으로 추정)
+- background를 객체로 오인한 오탐: Gloves 60건, NO-Gloves 121건
+
+## 학습 곡선 (results.png)
+
+- train/val loss 모두 정상 하락 후 안정화, **과적합 징후 없음**
+- mAP50은 epoch ~20에서 0.93 근처에 도달한 뒤 안정적으로 유지
+- precision/recall 곡선이 epoch 0~5 구간에서 크게 출렁이지만(웜업 구간, learning rate가
+  아직 안정화되기 전) 이후로는 매끄럽게 수렴 — helmet_v2/glasses_v2와 같은 패턴
+
+## helmet·glasses 대비 상대적 위치
+
+| 모델 | mAP50 | 비고 |
+|---|---|---|
+| helmet_v2 | 0.96 | |
+| glasses_v3 | 0.974 | |
+| **glove_v1** | **0.933** | 셋 중 가장 낮지만 여전히 준수한 수준 |
+
+- 세 모델 모두 표준 YOLOv8n fine-tuning, 클래스 수(2개)도 동일한데 glove_v1이 상대적으로
+  낮은 것은 **장갑을 낀 손이 헬멧·고글보다 형태 변화가 훨씬 크기 때문**으로 추정(손 각도,
+  쥐는 자세, 다른 물체에 의한 가림). 판정 대상의 형태가 고정적일수록(헬멧·고글) mAP50이
+  높고, 형태가 가변적일수록(손·장갑) 낮아지는 경향은 공개 연구에서도 일반적으로 보고됨.
+- 여전히 **실물 검증은 하지 않은 상태** — glasses_v1이 mAP50 0.97에도 실물에서 완전히
+  실패했던 전례가 있으므로, 이 수치만으로 "잘 됐다"고 단정하지 않는다(공개 데이터 도메인과
+  세정기 현장 도메인이 다를 수 있음).
+
+## webcam_sop.py 반영 여부
+
+**통합하지 않음.** 장갑·공구는 작업자 바디캠(근접, 0.8m 이내) 담당 항목이고
+`webcam_sop.py`는 감시단원 채널 처리기다(카메라 2채널 표 참고). 작업자 채널 처리기가
+생기기 전까지는 이 가중치를 그대로 보관만 한다. 로컬 웹캠 단독 검증용 스크립트는
+`webcam_glove.py` 참고.
+
+## 다음 단계
+
+1. [x] Colab 학습 (Drive 체크포인트 방식)
+2. [ ] 로컬 웹캠으로 실물 장갑 검증(glasses_v1이 mAP50 0.97에도 실물에서 실패했던 사례를
+   감안해 반드시 실물로 재확인)
+3. [ ] 세정기 현장 실측 후, 실제 사용하는 장갑·공구 종류로 fine-tuning 필요성 재평가
+4. [ ] 작업자 카메라 채널 처리기 설계 시 이 모델을 그 채널에 통합(감시단원 채널인
+   `webcam_sop.py`에는 넣지 않음)
+
+## 산출물
+
+- 가중치: `models/glove_v1_best.pt` (git 제외 — `*.pt`, 로컬/Drive 보관)
+- `docs/glove_v1/` : results.csv, results.png, confusion_matrix.png
+
+## 데이터셋 라이선스
+
+[safety-gloves](https://universe.roboflow.com/roboflow-universe-projects/safety-gloves-xbnf8)
+(Roboflow Universe, v5, 10,459장) — **CC BY 4.0**, 출처 표기 필요.

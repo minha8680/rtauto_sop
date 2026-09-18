@@ -198,6 +198,32 @@ helmet과 같은 "보호구 착용" 항목의 두 번째 대상입니다. 두 �
 하드웨어에서 재현될지 알 수 없어 **바디캠 입고 후 재검증하기로 하고 보류**했습니다. 당장
 2m 이상 거리에서 신뢰도가 필요하면 `--no-glasses`로 보안경 판정만 끄고 쓸 수 있습니다.
 
+### 학습 결과 — 장갑 착용/미착용 검출 (glove_v1, 베이스라인)
+
+헬멧·보안경과 달리 **작업자 바디캠(0.8m 이내 근접)** 담당 항목입니다. 세정기 현장을 아직
+방문하지 못해 실제 사용 장갑·공구 영상이 없는 상태라, 공개 데이터셋으로 먼저 베이스라인을
+잡아뒀습니다.
+
+| 지표 | 값 |
+|---|---|
+| 데이터셋 | `safety-gloves-xbnf8` v5, 10,459장 (Gloves 4,669 : NO-Gloves 6,135, CC BY 4.0) |
+| mAP@50 | 0.933 |
+| 착용 검출률 (recall) | 0.930 |
+| 미착용 검출률 (recall) | 0.903 |
+| 실물 검증 | 아직 안 함 |
+
+- 상세: [`docs/glove_v1/metrics.md`](docs/glove_v1/metrics.md)
+- helmet_v2(0.96)·glasses_v3(0.974)보다 mAP50이 낮은데, 셋 다 같은 YOLOv8n fine-tuning·
+  같은 2클래스 구조인 걸 감안하면 **판정 대상의 형태 가변성 차이**로 보입니다 — 헬멧·고글은
+  형태가 비교적 고정적인 반면 장갑을 낀 손은 각도·쥐는 자세·가림에 따라 형태가 크게
+  바뀝니다.
+- **`webcam_sop.py`에는 통합하지 않습니다.** 장갑은 감시단원 채널이 아니라 작업자 채널
+  담당인데, 작업자 채널 처리기 자체가 아직 없기 때문입니다(SOP 문서가 선행 조건). 단독
+  검증용으로 `webcam_glove.py`를 뒀습니다.
+- **실물 미검증 상태로 남겨둡니다.** glasses_v1이 mAP50 0.97에도 실물 고글을 0건 검출했던
+  전례가 있어, 이 mAP50 수치만으로 "현장에서 쓸 수 있다"고 판단하지 않습니다 — 실물 웹캠
+  검증과 세정기 현장 실측이 선행돼야 합니다.
+
 ### 웹캠 테스트에서 확인한 것
 
 로컬 웹캠 근접 조건에서 helmet_v2는 착용/미착용을 신뢰도 있게 구분합니다(confidence 0.7~0.9).
@@ -342,6 +368,8 @@ python webcam_sop.py --no-clip      # 경보 구간 클립 저장을 끄고 싶�
 
 # 단일 기능 검증용 (문제 생겼을 때 원인 분리에 유용)
 python webcam_helmet.py     # 안전모만
+python webcam_glasses.py    # 보안경만 (glasses_v3)
+python webcam_glove.py      # 장갑만 (glove_v1, 베이스라인·실물 미검증)
 python webcam_person.py     # 인원 수 + 추적만
 python webcam_zone.py       # 안전구역만
 python debug_aruco.py       # 마커가 인식되는지만 (조명/거리/인쇄 문제 진단)
@@ -361,10 +389,10 @@ python predict.py           # test 이미지 폴더 일괄 추론 → runs/ 에 
 | `generate_markers.py`, `markers/` | 안전구역용 ArUco 마커 생성/보관 |
 | `trackers/bytetrack_person.yaml` | 저FPS(로컬 CPU)용 ByteTrack 튜닝 설정 |
 | `requirements.txt` | 로컬 실행 환경 (학습은 Colab이라 무관) |
-| `webcam_helmet.py`, `webcam_glasses.py`, `webcam_person.py`, `webcam_zone.py` | 단계별 검증용 단일 기능 스크립트 |
+| `webcam_helmet.py`, `webcam_glasses.py`, `webcam_glove.py`, `webcam_person.py`, `webcam_zone.py` | 단계별 검증용 단일 기능 스크립트 |
 | `debug_aruco.py` | 마커 인식 진단 (코드 문제 vs 조명·거리 문제 분리) |
 | `predict.py` | 학습 가중치로 test 이미지 일괄 추론 |
-| `docs/helmet_v1/`, `docs/helmet_v2/`, `docs/glasses_v1/`, `docs/glasses_v2/`, `docs/glasses_v3/` | 학습 결과 지표·그래프·웹캠 테스트 평가 |
+| `docs/helmet_v1/`, `docs/helmet_v2/`, `docs/glasses_v1/`, `docs/glasses_v2/`, `docs/glasses_v3/`, `docs/glove_v1/` | 학습 결과 지표·그래프·웹캠 테스트 평가 |
 
 > `main.py` 자리는 비워둠 — 작업자/감시단원 2채널을 합친 파이프라인이 생기면 그것이 진입점.
 > 데이터셋 다운로드·로컬 학습 스크립트는 없음 — 학습은 전부 Colab에서 진행 (위 절차 참고).
