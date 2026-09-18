@@ -121,7 +121,7 @@ docs/<name>/            (results.csv, results.png, confusion_matrix.png → 커�
 ```
 rtauto_sop/
 ├── webcam_sop.py        # ★ 메인 통합 데모 (= 감시단원 채널 처리기)
-│                        #   person+helmet_v2+glasses_v2+ArUco 구역을 한 루프에서. 4규칙:
+│                        #   person+helmet_v2+glasses_v3+ArUco 구역을 한 루프에서. 4규칙:
 │                        #   N인1조(3초) / 헬멧 미착용(10초) / 보안경 미착용(10초) / 안전구역 침범(3초)
 │                        #   헬멧·보안경은 완전히 독립 규칙(match_ppe_to_persons 매칭 로직 공유)
 │                        #   --crew, --*-hold, --no-zone, --no-glasses, --push-url, --fcm-token,
@@ -141,7 +141,7 @@ rtauto_sop/
 │
 │   ── 아래는 단계별 검증용으로 남겨둔 단일 기능 스크립트 (통합본은 webcam_sop.py) ──
 ├── webcam_helmet.py     # 안전모 착용/미착용만
-├── webcam_glasses.py    # 보안경 착용/미착용만 (glasses_v2, webcam_sop.py에 통합 완료·이건 단독 검증용)
+├── webcam_glasses.py    # 보안경 착용/미착용만 (glasses_v3, webcam_sop.py에 통합 완료·이건 단독 검증용)
 ├── webcam_person.py     # 인원 수+추적+2인1조 규칙만
 ├── webcam_zone.py       # 안전구역 침범만 (MarkerMemory 원본 구현)
 ├── debug_aruco.py       # 마커 인식 자체만 진단 (코드 vs 조명/거리 문제 분리용)
@@ -151,8 +151,9 @@ rtauto_sop/
 │   ├── helmet_v1/       # 착용 위주 데이터셋 baseline 결과 (실패 사례)
 │   ├── helmet_v2/       # 착용/미착용 2클래스 결과 (성공) + webcam_test.md
 │   ├── glasses_v1/      # 보안경 착용/미착용 2클래스 결과 (지표는 성공, 실물 검증 실패 — 아래 참고)
-│   └── glasses_v2/      # glasses_v1 실패 원인(데이터셋 스타일) 해결한 재학습본 — 현재 사용 중
-├── models/              # .gitignore(*.pt) — helmet_v1/v2_best.pt, glasses_v1/v2_best.pt (로컬 전용)
+│   ├── glasses_v2/      # glasses_v1의 실물 인식 실패는 고쳤지만 일반 안경 오탐 발견 — 아래 v3 참고
+│   └── glasses_v3/      # spec(일반 안경)을 배경이 아닌 no_goggles로 재매핑 — 현재 사용 중
+├── models/              # .gitignore(*.pt) — helmet_v1/v2_best.pt, glasses_v1/v2/v3_best.pt (로컬 전용)
 ├── datasets/, runs/, venv/          # .gitignore
 ├── yolov8n.pt                        # 사전학습 가중치 (*.pt로 제외)
 ├── vapid_private_key.pem            # .gitignore(*.pem) — Web Push 서명 키, 비공개
@@ -176,17 +177,25 @@ rtauto_sop/
 | helmet_v1 | Roboflow `hard-hat-detection-ws2wk` v1 (668장) | hard hat / no hard hat / not hard hat | mAP50 0.41. 착용 recall 0.91, **미착용 0.00~0.33 (실패)** | `models/helmet_v1_best.pt` |
 | **helmet_v2** | Roboflow `joseph-nelson/hard-hat-workers` (~7,000장) | helmet / no_helmet (person 제외) | **mAP50 0.96. 착용 recall 0.97, 미착용 0.95 (성공)** | `models/helmet_v2_best.pt` |
 | glasses_v1 | Roboflow PPE Combined Model에서 Goggles/NO-Goggles만 필터링 (8,280 인스턴스, 1:1 균형) | glasses / no_glasses | mAP50 0.97, 지표는 성공했지만 **실물 풀페이스 고글 인식은 완전 실패**(2026-09-17, 실물+프린트 둘 다 0건) — 데이터셋이 "Goggles"란 이름과 달리 안경형 위주였던 것으로 추정 | `models/glasses_v1_best.pt` |
-| **glasses_v2** | Roboflow `seafty_goggles`에서 spec(일반 안경) 제외, goggles/no_goggles만 사용 (5,936:4,122) | glasses / no_glasses | **mAP50 0.97. 착용 recall 0.97, 미착용 0.94 — glasses_v1이 실패한 실물 사진 재검증 성공** | `models/glasses_v2_best.pt` |
+| glasses_v2 | Roboflow `seafty_goggles`에서 spec(일반 안경) **드롭**, goggles/no_goggles만 사용 (5,936:4,122) | glasses / no_glasses | mAP50 0.97, glasses_v1의 실물 고글 인식 실패는 해결했지만 **1m 거리 일반 안경을 0.6 confidence로 고글 오탐**(2026-09-18 발견) — spec을 배경으로 버려서 대조 신호가 없었던 게 원인 | `models/glasses_v2_best.pt` |
+| **glasses_v3** | glasses_v2와 동일 데이터셋, spec을 배경 대신 **no_goggles로 재매핑**(goggles 5,936:no_goggles 6,304) | glasses / no_glasses | **mAP50 0.97, 착용 recall 0.98, 미착용 0.96 — v2보다 전 지표 개선.** glasses_v2_best.pt에서 warm start, 30 epoch만에 도달 | `models/glasses_v3_best.pt` |
 
 - **핵심 교훈**: helmet_v1과 v2는 학습 설정 동일, **데이터셋만 교체**. 미착용 학습 표본이
   16~64개 → 1,000개 이상으로 늘자 미착용 recall 0.00 → 0.95. "학습량이 아니라 데이터 문제".
 - 자세한 지표는 `docs/helmet_v1/metrics.md`, `docs/helmet_v2/metrics.md`, `docs/glasses_v1/metrics.md`,
-  `docs/glasses_v2/metrics.md`, 웹캠 테스트 평가는 `docs/helmet_v2/webcam_test.md`.
+  `docs/glasses_v2/metrics.md`, `docs/glasses_v3/metrics.md`, 웹캠 테스트 평가는 `docs/helmet_v2/webcam_test.md`.
 - **glasses_v1 → v2 교훈(2026-09-17)**: 학습 지표(mAP50 0.97)가 좋아도 **데이터셋 클래스명만
   믿고 실제 이미지 스타일을 확인 안 하면 실물에서 완전히 실패할 수 있다** — helmet_v1(표본
   수 부족)과는 또 다른 종류의 실패. 새 데이터셋을 고를 때는 (1) Roboflow API로 정확한
   인스턴스 수 조회 (2) 후보들이 이름만 다른 동일 원본인지 확인 (3) 대표 이미지로 실제 스타일
   확인, 이 세 단계를 거칠 것 — `docs/glasses_v2/metrics.md`에 상세 절차 기록.
+- **glasses_v2 → v3 교훈(2026-09-18)**: 학습 데이터셋에 이미 존재하는 대조 클래스(`spec`)를
+  "우리 판정엔 필요 없다"고 배경으로 버리면, 모델이 그 대상과 목표 클래스를 구분할 근거
+  자체를 잃는다 — 오히려 **의미상 같은 결론으로 묶이는 클래스는 배경이 아니라 목표
+  클래스로 합쳐서 명시적 대조군으로 쓸 것**(여기선 "안전고글 미착용"이라는 같은 결론이라
+  no_goggles로 합침). 또한 이미 학습된 가중치가 있으면 yolov8n.pt부터 새로 학습하지 말고
+  **그 가중치에서 warm start**하면 훨씬 적은 epoch로 같거나 더 나은 결과에 도달할 수 있다
+  (v2: yolov8n.pt부터 50epoch, v3: glasses_v2_best.pt에서 30epoch로 전 지표 개선).
 
 ### 데이터셋 출처·라이선스 (2026-09-11 확인, public 저장소라 반드시 지킬 것)
 
@@ -195,13 +204,14 @@ rtauto_sop/
 | helmet_v1 | [Hard hat detection](https://universe.roboflow.com/adamson-university-nrlyj/hard-hat-detection-ws2wk) (Adamson University, Roboflow Universe, v1, 668장) | **CC BY 4.0** | 출처 표기 필요 (원저작자 표기 없이 그대로 배포·재공유 금지) |
 | helmet_v2 | [Hard Hat Workers](https://universe.roboflow.com/joseph-nelson/hard-hat-workers) (Roboflow 재공개, 원출처 Northeastern University - China, Harvard Dataverse doi:10.7910/DVN/7CBGOS, ~7,000장) | **Public Domain (CC0 1.0)** | 없음 — 출처 표기 의무는 없으나 관례상 계속 표기 |
 | glasses_v1 | [Personal Protective Equipment - Combined Model](https://universe.roboflow.com/roboflow-universe-projects/personal-protective-equipment-combined-model) (Roboflow Universe, 44,002장 중 Goggles/NO-Goggles만 필터링) | **CC BY 4.0** | 출처 표기 필요 (실물 검증 실패로 v2로 대체, 출처 표기는 계속 유지) |
-| glasses_v2 | [seafty_goggles](https://universe.roboflow.com/abduls-okhnp/seafty_goggles) (Roboflow Universe, v9, 9,149장 중 goggles/no_goggles만 사용, spec 제외) | **CC BY 4.0** | 출처 표기 필요 |
+| glasses_v2 | [seafty_goggles](https://universe.roboflow.com/abduls-okhnp/seafty_goggles) (Roboflow Universe, v9, 9,149장 중 goggles/no_goggles만 사용, spec 제외) | **CC BY 4.0** | 출처 표기 필요 (일반 안경 오탐으로 v3로 대체, 출처 표기는 계속 유지) |
+| glasses_v3 | 위와 동일 데이터셋(seafty_goggles v9), spec을 no_goggles로 재매핑해서 사용 | **CC BY 4.0** | 출처 표기 필요 |
 
-- 세 데이터셋 모두 상업적 이용 제한은 없음(CC BY 4.0도 상업적 사용 허용, 조건은 출처 표기뿐).
-- **학습된 가중치(`models/helmet_v1_best.pt`, `helmet_v2_best.pt`, `glasses_v1/v2_best.pt`)
+- 데이터셋 모두 상업적 이용 제한은 없음(CC BY 4.0도 상업적 사용 허용, 조건은 출처 표기뿐).
+- **학습된 가중치(`models/helmet_v1_best.pt`, `helmet_v2_best.pt`, `glasses_v1/v2/v3_best.pt`)
   자체는 `*.pt`로 gitignore돼 저장소엔 없음** — 그래도 데이터셋 출처는 공개 코드/문서
-  (`docs/helmet_v1/`, `docs/helmet_v2/`, `docs/glasses_v1/`, `docs/glasses_v2/`, 이 표)에
-  항상 남겨둘 것.
+  (`docs/helmet_v1/`, `docs/helmet_v2/`, `docs/glasses_v1/`, `docs/glasses_v2/`,
+  `docs/glasses_v3/`, 이 표)에 항상 남겨둘 것.
 
 ## 프로젝트 완성도 (현실 체크)
 
@@ -209,10 +219,11 @@ rtauto_sop/
 안전구역 침범)를 `webcam_sop.py` 하나로 통합. 안전구역은 알고리즘 **개념 검증(PoC)** 수준.
 실제로 있는 것:
 
-- helmet_v2, glasses_v2 검출 모델 (재사용 가능한 핵심 자산 — 둘 다 `webcam_sop.py` 통합
-  완료. glasses는 v1이 실물 풀페이스형 고글 인식에 실패해 다른 데이터셋으로 재학습한
-  v2로 교체(2026-09-17) — 실물 재검증 성공, 상세는 `docs/glasses_v2/metrics.md`)
-- Colab 학습 파이프라인 (glasses_v1/v2로 재사용 검증됨 — 클래스만 다른 데이터셋 재활용에
+- helmet_v2, glasses_v3 검출 모델 (재사용 가능한 핵심 자산 — 둘 다 `webcam_sop.py` 통합
+  완료. glasses는 v1(실물 풀페이스형 고글 인식 실패) → v2(일반 안경을 고글로 오탐) → v3
+  (spec을 no_goggles로 재매핑, 전 지표 개선)로 두 번 교체(2026-09-17~18) — 상세는
+  `docs/glasses_v2/metrics.md`, `docs/glasses_v3/metrics.md`)
+- Colab 학습 파이프라인 (glasses_v1/v2/v3로 재사용 검증됨 — 클래스만 다른 데이터셋 재활용에
   효과적. v2부터는 세션 끊김 대비 Drive 체크포인트 저장 + 자동 이어학습 방식도 도입)
 - person 검출 + ByteTrack 추적 + 공간 매칭(`match_ppe_to_persons`, helmet·glasses 공유) +
   `SustainedLatch` 규칙 패턴 (지속시간 확정/해제, 재사용되는 핵심 로직)
@@ -343,7 +354,7 @@ HTTPS/MDM 문제를 우회한 셈(네이티브 앱은 브라우저 Push API 제�
 # ★ 메인: 감시단원 채널 통합 데모 ('q'로 종료) — 로컬 CPU
 python webcam_sop.py                    # 4규칙 전부 (마커 준비됐을 때)
 python webcam_sop.py --no-zone           # 마커 없으면 안전구역만 끄고 실행
-python webcam_sop.py --no-glasses        # glasses_v2 없이 헬멧만 판정
+python webcam_sop.py --no-glasses        # glasses_v3 없이 헬멧만 판정
 python webcam_sop.py --crew 3 --zone-hold 5      # 파라미터 조정 (--help 참고)
 
 # Web Push 알림 연동 (터미널 2개 필요)
@@ -369,7 +380,7 @@ python webcam_sop.py --clip-sec 5
 
 # 단일 기능 검증용 (통합본 문제 생겼을 때 원인 분리에 유용)
 python webcam_helmet.py     # 안전모만
-python webcam_glasses.py    # 보안경만 (glasses_v2)
+python webcam_glasses.py    # 보안경만 (glasses_v3)
 python webcam_person.py     # 인원 수 + 추적만
 python webcam_zone.py       # 안전구역만
 python debug_aruco.py       # 마커 인식되는지만 (조명/거리/인쇄 문제 진단)
@@ -545,6 +556,43 @@ Roboflow 다운로드가 로컬에서 다시 필요하면 그 절차를 참고�
   glasses_v2_best.pt`, `docs/glasses_v2/metrics.md`로 정리. `webcam_sop.py`의
   `GLASSES_MODEL_PATH`, `webcam_glasses.py`의 `MODEL_PATH` 둘 다 v2로 전환 완료 — **실제
   웹캠으로 돌려보는 최종 확인은 다음 단계**
+- [x] **glasses_v2 실제 웹캠 검증에서 새 문제 발견 → glasses_v3로 재교체 (2026-09-18)** —
+  1m 거리 일반 안경을 confidence 0.6으로 "고글"이라고 오탐(사용자 실사용 중 발견). 원인은
+  glasses_v2 학습 시 원본 데이터셋의 3번째 클래스 `spec`(일반 안경)을 배경으로 드롭해서,
+  모델이 "이건 고글이 아니다"라는 대조 신호를 일반 안경에 대해 못 받았던 것 — 원거리
+  저해상도 문제가 아니라(1m는 오히려 근접) 모델이 진짜로 못 배운 것으로 확인(confidence가
+  낮지 않고 0.6으로 높았음). **해결**: `spec`을 배경이 아니라 `no_goggles`로 재매핑해서
+  재학습 — "일반 안경 착용"과 "미착용" 둘 다 SOP상 "안전고글 미착용"이라는 같은 결론이라
+  의미상으로도 맞는 매핑. `glasses_v2_best.pt`에서 warm start, 30 epoch만에 **mAP50 0.974
+  (동일), 착용 recall 0.980(v2 0.973), 미착용 recall 0.961(v2 0.935) — 양쪽 다 개선**.
+  기존 실물 풀페이스 고글 사진도 재검증(confidence 0.410→0.781로 상승, 회귀 없음). `models/
+  glasses_v3_best.pt`, `docs/glasses_v3/metrics.md`로 정리. `webcam_sop.py`/`webcam_glasses.py`
+  둘 다 v3로 전환, 기존 단위 테스트 5종 재검증 통과. **1m 거리 일반 안경 오탐이 실제로
+  해결됐는지는 캡처 이미지가 없어 문서화 못함 — 실제 웹캠 재확인이 다음 단계**
+- [ ] **보안경 2m+ 원거리 오탐 — 여러 시도 실패, 원복하고 하드웨어 재검증으로 미룸
+  (2026-09-18)**: glasses_v3로도 2~4m 거리에서 일반 안경을 고글로 오인식하는 문제가
+  실제 웹캠 검증에서 확인됨. 원인을 좁혀보려고 순서대로 시도함 — **모두 근본 해결은
+  실패했고 부작용만 남겨서 전부 되돌림**(`webcam_sop.py`/`webcam_glasses.py`는 glasses_v3
+  모델 경로 전환만 남기고 커밋 `8b4e095` 상태로 리셋):
+  1. 추론 `imgsz`를 640→1024로 상향 — 50cm는 고쳐졌지만 1m 이상은 그대로
+  2. 보안경 판정을 프레임 전체 대신 **사람 전신 박스로 crop**해서 확대(`detect_glasses_per_person`
+     신설) — 전신 박스를 자르면 크롭 안에서도 얼굴 비율이 원본과 거의 같아서(몸 전체의
+     1/6~1/7) 실질적 확대 효과가 거의 없었음(실측: 모델 입력 기준 얼굴이 77px→106px 정도
+     차이). 2~4m 오탐 그대로
+  3. **웹캠 캡처 해상도**가 `cv2.VideoCapture(0)` 기본값(640x480)으로 찍히고 있던 걸 발견해
+     1920x1080으로 명시 설정 — 같은 거리에서 얼굴 픽셀 높이가 57px→131px로 실측 증가(2.3배,
+     해상도 배율과 일치)했지만, **그래도 2~4m 오탐은 그대로였고 오히려 헬멧 판정까지
+     불안정해짐**(캡처 해상도 변경이 프레임을 공유하는 헬멧 모델에도 영향을 준 것으로 추정)
+  4. crop 대상을 전신이 아니라 **머리 영역만**(전신 박스 위쪽 22%, `GLASSES_HEAD_FRACTION`)으로
+     좁혀서 진짜 디지털 줌 효과를 내도록 재설계 — 여전히 2~4m 오탐 지속, 게다가 착용/미착용
+     판정이 프레임마다 심하게 flip-flop, 헬멧 오탐도 안 없어짐
+
+  **결론**: 임계값·crop·해상도 같은 파이프라인 조정으로는 안 풀리는 문제로 보임 — 웹캠
+  자체의 화질/압축/오토포커스 특성과 학습 데이터(seafty_goggles)의 촬영 조건이 근본적으로
+  다른 도메인 격차일 가능성이 높음. **지금 쓰는 노트북 웹캠은 기획안상 실제 배치 카메라
+  (포팩트 LIVE ST20, 2K 촬영)와 다른 장비라 여기서 더 튜닝해도 실제 하드웨어에서 재현될지
+  알 수 없음** — 바디캠 입고 후 그 카메라로 재검증하기 전까지는 더 파고들지 않기로 함.
+  **당장 2m+ 신뢰도가 필요하면 `--no-glasses`로 보안경 판정을 끄고 헬멧+구역만 쓸 것.**
 - [ ] (선택) 알림 등급별 차등 발송 — 위 "알림 설계" 섹션 참고. 서버 쪽 스케줄러·ACK까지
   필요해 규모가 큼, 지금 급하지 않음
 - [ ] (장비 입고 후) RTSP 2채널 수신 + 현장 재튜닝 + GPU 동시 부하 검증
