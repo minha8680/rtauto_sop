@@ -46,6 +46,15 @@ glasses/no_glasses) 박스의 중심점이 들어오는지로 "그 사람이 실
 세부 파라미터는 --help 참고. 나중에 SOP를 JSON으로 구조화하면 이 값들은 명령행 인자 대신
 SOP 문서에서 읽어오도록 바뀔 예정 — 지금은 그 전 단계 임시 인터페이스.
 
+영상 입력은 --source 로 바꾼다(기본값 "0" = 웹캠, 기존 동작과 동일). 실제 바디캠(RTSP)을
+붙일 때는 그 주소를 그대로 주면 된다 — 검출 로직은 frame만 받아서 동작하므로 이 인자 말고는
+아무것도 안 바뀐다. 여는 로직 자체는 video_source.py에 공통 함수로 분리해서 rtsp_test.py와
+공유한다(설정을 두 파일에 각각 복사해두면 한쪽만 고치고 잊어버리는 사고가 나기 쉬워서).
+RTSP 연결 자체가 끊김 없이 들어오는지는 먼저 rtsp_test.py로 확인해둘 것(2026-09-18 추가,
+아직 실제 장비로 검증 전):
+
+    python webcam_sop.py --source rtsp://<카메라IP>:<포트>/<경로>
+
 push_server.py(Web Push 프로토타입)를 같이 띄워두면 --push-url 로 실제 알림 연동:
 
     uvicorn push_server:app --port 8000        # 다른 터미널에서 먼저 실행
@@ -111,6 +120,8 @@ from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import service_account
 from PIL import Image, ImageDraw, ImageFont
 from ultralytics import YOLO
+
+from video_source import open_video_source
 
 PERSON_MODEL_PATH = "yolov8n.pt"
 HELMET_MODEL_PATH = "models/helmet_v2_best.pt"
@@ -217,6 +228,10 @@ def parse_args():
                     help=f"위반 확정 시 저장할 경보 구간 클립 길이(초) (기본 {DEFAULT_CLIP_SEC})")
     p.add_argument("--no-clip", action="store_true",
                     help="경보 구간 클립 저장을 끔 (디스크 아끼고 싶을 때)")
+    p.add_argument("--source", type=str, default="0",
+                    help="영상 입력. 정수(웹캠 장치 번호, 기본 0) 또는 rtsp://... 스트림 주소. "
+                         "RTSP를 주면 자동으로 CAP_FFMPEG + 저지연 버퍼 설정을 적용함 "
+                         "(rtsp_test.py로 연결 자체가 먼저 검증된 주소를 쓸 것)")
     return p.parse_args()
 
 
@@ -843,9 +858,11 @@ def main():
     glasses_model = YOLO(GLASSES_MODEL_PATH) if not args.no_glasses else None
     detector = cv2.aruco.ArucoDetector(ARUCO_DICT, cv2.aruco.DetectorParameters())
 
-    cap = cv2.VideoCapture(0)
+    if args.source.lower().startswith(("rtsp://", "rtsps://")):
+        print(f"[source] RTSP 스트림 연결 시도: {args.source}")
+    cap = open_video_source(args.source)
     if not cap.isOpened():
-        print("카메라를 열 수 없습니다.")
+        print("카메라를 열 수 없습니다. (--source 값이 맞는지, RTSP면 rtsp_test.py로 먼저 확인했는지 점검할 것)")
         return
     _run(cap, person_model, helmet_model, glasses_model, detector, args, zone_enabled)
 

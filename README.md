@@ -261,7 +261,22 @@ person 검출+추적, helmet_v2, glasses_v3, ArUco 구역 인식을 한 루프�
 python webcam_sop.py --crew 3 --crew-hold 5 --helmet-hold 15 --glasses-hold 15 --zone-hold 5
 python webcam_sop.py --no-zone          # 마커를 준비 못 했을 때 안전구역만 끄기
 python webcam_sop.py --no-glasses       # glasses_v3 모델 없이 헬멧만 판정
+python webcam_sop.py --source rtsp://<카메라IP>:<포트>/<경로>   # 웹캠 대신 실제 바디캠
 ```
+
+**바디캠(RTSP)으로 바꿀 때 검출 로직은 그대로입니다.** `_run()`이 `cap.read()`로 나온 이미지
+(`frame`)만 받아서 동작하고 그 출처는 전혀 모르는 구조라, 실제로 바뀌는 건 `--source` 인자
+하나뿐입니다(`video_source.py`의 `open_video_source`가 RTSP면 자동으로 `CAP_FFMPEG`+저지연
+버퍼를 적용 — `rtsp_test.py`와 이 함수를 공유해서 설정이 두 곳에 따로 남지 않게 함).
+다만 이건 "실행이 되게" 하는 것과 "안정적으로 계속 돌게" 하는 건 다른 문제입니다 — 끊김
+재연결 로직은 지금 `rtsp_test.py`에만 있고 `webcam_sop.py`엔 아직 없고, 작업자캠+감시단원캠
+**2채널을 동시에** 받는 구조도 아직 없습니다(지금은 `cap` 1개만 받는 단일 카메라 전제).
+RTSP 주소는 반드시 `rtsp_test.py`로 연결 자체가 끊김 없이 들어오는지 먼저 확인한 뒤에 쓸 것.
+
+장비 입고 후 무엇을 어떤 순서로 확인할지는
+[`docs/bodycam_test_guide.md`](docs/bodycam_test_guide.md)에 단계별로 정리해뒀습니다
+(연결 → 보안경 2~4m 오탐 재현 여부 → 헬멧 판정 → 배터리 지속시간 → SoftAP 반경 → 마커
+인식 거리, 순서대로 리스크가 큰 항목부터).
 
 ### 안전구역을 "화면 좌표"가 아닌 "실세계 기준"으로 잡는 법
 
@@ -366,6 +381,9 @@ python webcam_sop.py --push-url http://localhost:8000/notify   # 터미널 2
 python view_events.py
 python webcam_sop.py --no-clip      # 경보 구간 클립 저장을 끄고 싶으면
 
+# 바디캠(RTSP) 연결 — 먼저 rtsp_test.py로 그 주소가 끊김 없이 들어오는지 확인한 뒤에 쓸 것
+python webcam_sop.py --source rtsp://<카메라IP>:<포트>/<경로>
+
 # 단일 기능 검증용 (문제 생겼을 때 원인 분리에 유용)
 python webcam_helmet.py     # 안전모만
 python webcam_glasses.py    # 보안경만 (glasses_v3)
@@ -384,6 +402,8 @@ python predict.py           # test 이미지 폴더 일괄 추론 → runs/ 에 
 | `push_server.py` | Web Push 알림 프로토타입 서버 (FastAPI, 구독 페이지 + `/notify`) |
 | `generate_vapid_keys.py` | Web Push용 VAPID 키 생성 (최초 1회) |
 | `send_test_alert.py` | 관리자 폰 전용 앱(rtauto_sop_android)으로 FCM 테스트 발송 — 엣지 PC 대신 |
+| `rtsp_test.py` | 바디캠 RTSP 연결·지연·재연결만 검증 (검출 모델 없음). 장비 입고 직후 최우선으로 돌려볼 것 |
+| `video_source.py` | 웹캠/RTSP를 여는 공통 함수 — `webcam_sop.py`·`rtsp_test.py`가 공유(중복 코드 방지) |
 | `view_events.py` | `events.jsonl`(위반 이력)을 확정↔해제 짝지어 읽기 좋게 출력 |
 | `clips/` | 위반 확정 시 자동 저장되는 경보 구간 클립(mp4), gitignore |
 | `generate_markers.py`, `markers/` | 안전구역용 ArUco 마커 생성/보관 |
@@ -393,6 +413,7 @@ python predict.py           # test 이미지 폴더 일괄 추론 → runs/ 에 
 | `debug_aruco.py` | 마커 인식 진단 (코드 문제 vs 조명·거리 문제 분리) |
 | `predict.py` | 학습 가중치로 test 이미지 일괄 추론 |
 | `docs/helmet_v1/`, `docs/helmet_v2/`, `docs/glasses_v1/`, `docs/glasses_v2/`, `docs/glasses_v3/`, `docs/glove_v1/` | 학습 결과 지표·그래프·웹캠 테스트 평가 |
+| `docs/bodycam_test_guide.md` | 포팩트 LIVE ST20 입고 후 테스트 절차 (연결 → 인식 정확도 → 배터리 → 무선망 → 마커) |
 
 > `main.py` 자리는 비워둠 — 작업자/감시단원 2채널을 합친 파이프라인이 생기면 그것이 진입점.
 > 데이터셋 다운로드·로컬 학습 스크립트는 없음 — 학습은 전부 Colab에서 진행 (위 절차 참고).
