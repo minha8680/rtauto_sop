@@ -413,11 +413,15 @@ def on_violation_confirmed(args, throttle, frame_buffer, rule, target, title, de
 
     - **클립 저장은 여전히 RepeatThrottle이 게이트한다** — 안 그러면 사람이 구역을
       들락날락할 때마다 디스크·프레임에 "녹화 폭탄"이 된다 (2026-09-11 발견·수정 그대로 유지).
-    - **알림(Push/FCM)은 이제 항상 보낸다** — 예전엔 반복 억제 대상이었지만, 실사용해보니
-      "해제됐다가 진짜로 다시 위반이면 폰이 다시 울려야" 안전하다는 게 확인됨. 알림 피로는
-      이제 앱 쪽(자동 해제 N건 배지, 다른 활성 위반 펼치기)에서 완화하므로 발송 자체를
-      억제할 필요가 줄었다. RepeatThrottle의 반복 카운트(note)는 그대로 계산해 문구에는
-      남기되, 발송 여부를 막는 데는 더 이상 쓰지 않는다."""
+    - **알림(Push/FCM)은 반복 여부와 무관하게 항상 보낸다** — 예전엔 반복 억제 대상이었지만,
+      실사용해보니 "해제됐다가 진짜로 다시 위반이면 폰이 다시 울려야" 안전하다는 게 확인됨.
+      RepeatThrottle의 반복 카운트(note)는 그대로 계산해 문구에는 남기되, 발송 여부를 막는
+      데는 더 이상 쓰지 않는다.
+    - **단, 관리자 폰 FCM 푸시는 중대(Critical) 등급에만 보낸다**(기획안 5.5절 등급표 —
+      "오경보는 작업 방해와 시스템 신뢰 저하를 유발하므로 관리자 푸시는 중대 편차에
+      한정한다"). 주의(Major, 헬멧·보안경)는 events.jsonl에는 그대로 남지만 폰까지는
+      안 간다(2026-09-21 수정 — 그 전엔 등급 무관하게 전부 보내고 있었음, `FCM_LEVEL_BY_RULE`은
+      표시용일 뿐 발송 여부를 가르지 않았던 버그)."""
     log_event("confirmed", rule, target, detail)
 
     # should_save_clip()은 내부 반복 횟수 카운터를 건드리는 부수효과가 있으므로 반드시 한
@@ -432,8 +436,9 @@ def on_violation_confirmed(args, throttle, frame_buffer, rule, target, title, de
 
     if args.push_url:
         send_push(args.push_url, title, full_detail)
-    if args.fcm_token:
-        send_fcm(args.fcm_token, title, full_detail, level=FCM_LEVEL_BY_RULE.get(rule, "중대"),
+    level = FCM_LEVEL_BY_RULE.get(rule, "중대")
+    if args.fcm_token and level == "중대":
+        send_fcm(args.fcm_token, title, full_detail, level=level,
                  kind="alert", key=fcm_key(rule, target))
 
 
