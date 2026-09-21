@@ -52,7 +52,7 @@
 |---|---|---|---|
 | 안전관리대책 | N인 1조 인원 수 | **감시단원** (2~4m) | ✅ `webcam_sop.py` |
 | 안전관리대책 | 헬멧·보안경 착용 | **감시단원** (2~4m) | ✅ `webcam_sop.py` |
-| 안전관리대책 | 장갑 착용 | **작업자** (근접 — 감시단원 거리에선 장갑까지 식별 어려움) | ❌ (glove_v1 베이스라인 학습 완료, 2026-09-18. 모델만 확보, 실물 미검증. 작업자 채널 처리기 생기면 그쪽에 통합 — `webcam_sop.py`(감시단원 채널)에는 안 넣음) |
+| 안전관리대책 | 장갑 착용 | **작업자** (근접 — 감시단원 거리에선 장갑까지 식별 어려움) | ❌ (glove_v1 베이스라인 학습은 됐으나 실물 검증 완전 실패(2026-09-21) — 현장 영상 fine-tuning 필요. 작업자 채널 처리기 생기면 그쪽에 통합 — `webcam_sop.py`(감시단원 채널)에는 안 넣음) |
 | 위험요인 | 안전구역 침범 | **감시단원** (광역) | ✅ `webcam_sop.py` (PoC) |
 | 위험요인 | 위험 자세(사다리 끝단) | **감시단원** (광역) | ❌ |
 | 항목·순서 | 단계 순서 위반·누락 | **작업자** (근접) | ❌ SOP 필요 |
@@ -151,7 +151,7 @@ rtauto_sop/
 │   ── 아래는 단계별 검증용으로 남겨둔 단일 기능 스크립트 (통합본은 webcam_sop.py) ──
 ├── webcam_helmet.py     # 안전모 착용/미착용만
 ├── webcam_glasses.py    # 보안경 착용/미착용만 (glasses_v3, webcam_sop.py에 통합 완료·이건 단독 검증용)
-├── webcam_glove.py      # 장갑 착용/미착용만 (glove_v1, 베이스라인·실물 미검증·통합 전, 단독 검증용)
+├── webcam_glove.py      # 장갑 착용/미착용만 (glove_v1, 베이스라인·실물 검증 완전 실패(2026-09-21)·통합 전, 단독 검증용)
 ├── webcam_person.py     # 인원 수+추적+2인1조 규칙만
 ├── webcam_zone.py       # 안전구역 침범만 (MarkerMemory 원본 구현)
 ├── debug_aruco.py       # 마커 인식 자체만 진단 (코드 vs 조명/거리 문제 분리용)
@@ -163,7 +163,7 @@ rtauto_sop/
 │   ├── glasses_v1/      # 보안경 착용/미착용 2클래스 결과 (지표는 성공, 실물 검증 실패 — 아래 참고)
 │   ├── glasses_v2/      # glasses_v1의 실물 인식 실패는 고쳤지만 일반 안경 오탐 발견 — 아래 v3 참고
 │   ├── glasses_v3/      # spec(일반 안경)을 배경이 아닌 no_goggles로 재매핑 — 현재 사용 중
-│   ├── glove_v1/        # 장갑 착용/미착용 베이스라인 (mAP50 0.933) — 실물 미검증, 작업자 채널용
+│   ├── glove_v1/        # 장갑 착용/미착용 베이스라인 (mAP50 0.933) — 실물 검증 완전 실패, 작업자 채널용
 │   └── bodycam_test_guide.md  # 포팩트 LIVE ST20 입고 후 테스트 절차 (특정 모델에 안 묶인 첫 플랫 문서)
 ├── models/              # .gitignore(*.pt) — helmet_v1/v2_best.pt, glasses_v1/v2/v3_best.pt,
 │                        #                     glove_v1_best.pt (전부 로컬 전용)
@@ -192,7 +192,7 @@ rtauto_sop/
 | glasses_v1 | Roboflow PPE Combined Model에서 Goggles/NO-Goggles만 필터링 (8,280 인스턴스, 1:1 균형) | glasses / no_glasses | mAP50 0.97, 지표는 성공했지만 **실물 풀페이스 고글 인식은 완전 실패**(2026-09-17, 실물+프린트 둘 다 0건) — 데이터셋이 "Goggles"란 이름과 달리 안경형 위주였던 것으로 추정 | `models/glasses_v1_best.pt` |
 | glasses_v2 | Roboflow `seafty_goggles`에서 spec(일반 안경) **드롭**, goggles/no_goggles만 사용 (5,936:4,122) | glasses / no_glasses | mAP50 0.97, glasses_v1의 실물 고글 인식 실패는 해결했지만 **1m 거리 일반 안경을 0.6 confidence로 고글 오탐**(2026-09-18 발견) — spec을 배경으로 버려서 대조 신호가 없었던 게 원인 | `models/glasses_v2_best.pt` |
 | **glasses_v3** | glasses_v2와 동일 데이터셋, spec을 배경 대신 **no_goggles로 재매핑**(goggles 5,936:no_goggles 6,304) | glasses / no_glasses | **mAP50 0.97, 착용 recall 0.98, 미착용 0.96 — v2보다 전 지표 개선.** glasses_v2_best.pt에서 warm start, 30 epoch만에 도달 | `models/glasses_v3_best.pt` |
-| **glove_v1** | Roboflow `safety-gloves-xbnf8` v5 (10,459장, Gloves 4,669:NO-Gloves 6,135, 원본부터 2클래스라 재매핑 불필요) | Gloves / NO-Gloves | **mAP50 0.933, 착용 recall 0.930, 미착용 0.903 (베이스라인, 2026-09-18).** yolov8n.pt부터 50epoch. helmet·glasses보다 낮지만 준수한 수준 — 손 형태가 더 가변적이라는 게 원인으로 추정. **실물 미검증** — 작업자 채널 처리기 생기기 전까지 통합 안 함(카메라 2채널 표 참고) | `models/glove_v1_best.pt` |
+| glove_v1 | Roboflow `safety-gloves-xbnf8` v5 (10,459장, Gloves 4,669:NO-Gloves 6,135, 원본부터 2클래스라 재매핑 불필요) | Gloves / NO-Gloves | mAP50 0.933, 착용 recall 0.930, 미착용 0.903 (지표는 준수). **실물 화학장갑 사진 7장 중 6장 실패 — glasses_v1과 같은 종류의 도메인 격차**(2026-09-21). 대체 공개 데이터셋(Roboflow/SH17/Open Images)도 전부 불채택 — 현장 영상 fine-tuning 외 대안 없음 | `models/glove_v1_best.pt` |
 
 - **핵심 교훈**: helmet_v1과 v2는 학습 설정 동일, **데이터셋만 교체**. 미착용 학습 표본이
   16~64개 → 1,000개 이상으로 늘자 미착용 recall 0.00 → 0.95. "학습량이 아니라 데이터 문제".
@@ -211,6 +211,14 @@ rtauto_sop/
   no_goggles로 합침). 또한 이미 학습된 가중치가 있으면 yolov8n.pt부터 새로 학습하지 말고
   **그 가중치에서 warm start**하면 훨씬 적은 epoch로 같거나 더 나은 결과에 도달할 수 있다
   (v2: yolov8n.pt부터 50epoch, v3: glasses_v2_best.pt에서 30epoch로 전 지표 개선).
+- **glove_v1 교훈(2026-09-21)**: 학습 지표(mAP50 0.933)가 준수해도, **판정 대상 자체가 색상·
+  재질·형태로 극단적으로 다양하면(장갑) 공개 데이터셋 하나로는 특정 서브타입(화학보호장갑)을
+  대표할 수 없다** — glasses_v1(데이터셋 스타일 오인)과 다른 세 번째 종류의 실패. 헬멧·고글은
+  형태가 비교적 고정적이라 한두 번의 데이터셋 교체로 해결됐지만, 장갑처럼 형태 가변성이 큰
+  대상은 **대체 데이터셋을 바꿔가며 찾는 접근 자체의 한계**에 부딪힐 수 있다 — 로보플로우·
+  SH17(라이선스 문제)·Open Images 세 곳을 다 확인해도 대안이 없었던 게 그 증거. 이런 대상은
+  처음부터 "공개 데이터로 안 되면 현장 영상 fine-tuning"을 대안이 아니라 **기본 경로**로
+  놓고 접근하는 게 나을 수 있다. 상세는 `docs/glove_v1/metrics.md`.
 
 ### 데이터셋 출처·라이선스 (2026-09-11 확인, public 저장소라 반드시 지킬 것)
 
@@ -240,8 +248,9 @@ rtauto_sop/
   (spec을 no_goggles로 재매핑, 전 지표 개선)로 두 번 교체(2026-09-17~18) — 상세는
   `docs/glasses_v2/metrics.md`, `docs/glasses_v3/metrics.md`)
 - glove_v1 검출 모델 (mAP50 0.933, 2026-09-18 완료 — 상세는 `docs/glove_v1/metrics.md`).
-  **실물 미검증, `webcam_sop.py`에는 통합 안 함** — 작업자 채널(아직 없음) 담당 항목이라
-  모델 자산으로만 확보해 둔 상태
+  **실물 검증 완전 실패(2026-09-21), 대체 공개 데이터셋도 전부 불채택 — 현장 영상
+  fine-tuning 전까지는 실사용 불가 상태로 보류.** `webcam_sop.py`에는 애초에 통합 안 함 —
+  작업자 채널(아직 없음) 담당 항목
 - Colab 학습 파이프라인 (glasses_v1/v2/v3, glove_v1로 재사용 검증됨 — 클래스만 다른
   데이터셋 재활용에 효과적. v2부터는 세션 끊김 대비 Drive 체크포인트 저장 + 자동 이어학습
   방식도 도입)
@@ -404,7 +413,7 @@ python webcam_sop.py --clip-sec 5
 # 단일 기능 검증용 (통합본 문제 생겼을 때 원인 분리에 유용)
 python webcam_helmet.py     # 안전모만
 python webcam_glasses.py    # 보안경만 (glasses_v3)
-python webcam_glove.py      # 장갑만 (glove_v1, 베이스라인·실물 미검증)
+python webcam_glove.py      # 장갑만 (glove_v1, 베이스라인·실물 검증 완전 실패)
 python webcam_person.py     # 인원 수 + 추적만
 python webcam_zone.py       # 안전구역만
 python debug_aruco.py       # 마커 인식되는지만 (조명/거리/인쇄 문제 진단)
@@ -710,5 +719,20 @@ Roboflow 다운로드가 로컬에서 다시 필요하면 그 절차를 참고�
   명시. `docs/` 하위 첫 "모델 전용이 아닌" 플랫 문서 — 기존엔 `docs/<model>/`처럼 모델별
   폴더만 있었는데, 이건 하드웨어 검증 절차라 특정 모델에 안 묶여서 새 위치로 둠. 결과는
   아직 없음(실측 전) — 실측 후 이 문서 하단에 결과 절을 채울 것
+- [x] **glove_v1 실물 검증 완전 실패 + 대체 데이터셋 조사 종료 (2026-09-18~21)** — 화학물질
+  취급용 실물 안전장갑 사진 7장(사용자 제공 1장 + 웹 수집 6장)으로 회전 4방향 × conf
+  0.15/0.01 테스트. **7장 중 6장 실패**(미검출 또는 완전 미검출), 사람이 실제 착용한 사진
+  2장은 confidence 0.27~0.46로 **엉뚱한 부위(방호복)를 확신 있게 오탐** — `glasses_v2`가
+  일반 안경을 0.6으로 오탐했던 것과 같은 종류의 결함. 대체 데이터셋으로 Roboflow(전용
+  데이터셋 없음, API 키 없어 정식 3단계 검증은 미완), SH17(CC BY-NC-SA라 라이선스 정책 위배로
+  제외), Google Open Images V7 "Glove" 클래스(CC BY 4.0, `fiftyone`으로 샘플 40장 직접
+  확인 — 화학장갑 스타일 0건, 전부 겨울/스포츠/전술 장갑)까지 확인했으나 전부 불채택. **공개
+  데이터셋 경로를 닫고 현장 영상 fine-tuning만이 유일한 경로로 결론**(상세는
+  `docs/glove_v1/metrics.md`). 조사 과정에서 설치한 `fiftyone`이 `opencv-python-headless`를
+  끌어와 `cv2.imshow`를 깨뜨리고 `starlette`도 구버전으로 내리는 부수 사고가 있었음 —
+  `pip uninstall` 후 `requirements.txt` 기준으로 재설치해 복구. 이 김에 `requirements.txt`
+  자체에 오래전부터 있던 손상(1번째·17번째 줄의 비정상 공백, `pip install -r`이 UnicodeDecodeError로
+  실패하는 원인이었음)도 같이 정리. `fiftyone` 다운로드 캐시(로컬 약 353MB)와 스크래치패드
+  샘플 이미지도 전부 삭제
 - [ ] (장비 입고 후) RTSP 2채널 수신 + 현장 재튜닝 + GPU 동시 부하 검증
 - [ ] (제품화 시점) 검출 프레임워크 라이선스 재검토 (YOLOv8 AGPL → YOLOX/RT-DETR Apache)
