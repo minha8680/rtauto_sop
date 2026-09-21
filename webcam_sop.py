@@ -266,25 +266,55 @@ def fcm_key(rule, target):
     return f"{rule}:{target}"
 
 
+FCM_MAX_ATTEMPTS = 3          # 최초 시도 포함 총 시도 횟수
+FCM_RETRY_BACKOFF_SEC = 1.5   # 재시도 사이 대기. 메인 프레임 루프를 막는 동기 호출이라 짧게 유지
+
+
+def _try_send_fcm_once(url, message):
+    """FCM 발송을 한 번만 시도한다. (성공 여부, 재시도할 가치가 있는지, 로그용 설명) 반환.
+
+    "재시도할 가치가 있는지"는 실패 종류로 가른다 — 네트워크 순단·429(과다 요청)·5xx(서버
+    오류)는 잠깐 후 다시 하면 될 수 있지만, 인증 파일이 없거나(FileNotFoundError) 토큰이
+    잘못됐거나(401/403) 요청 자체가 잘못된(400) 경우는 몇 번을 다시 보내도 똑같이 실패한다.
+    """
+    try:
+        access_token = _get_fcm_access_token()
+    except FileNotFoundError as e:
+        return False, False, f"인증 실패, {FCM_SERVICE_ACCOUNT_FILE} 없음: {e}"
+    except Exception as e:
+        return False, True, f"인증 실패: {e}"
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json; UTF-8",
+    }
+    try:
+        resp = requests.post(url, headers=headers, data=json.dumps(message), timeout=3)
+    except requests.exceptions.RequestException as e:
+        return False, True, f"네트워크 오류: {e}"
+
+    if resp.status_code == 200:
+        return True, False, None
+    if resp.status_code == 429 or resp.status_code >= 500:
+        return False, True, f"{resp.status_code} {resp.text}"
+    return False, False, f"{resp.status_code} {resp.text} (재시도해도 안 풀리는 오류)"
+
+
 def send_fcm(token, title, body, level="중대", kind="alert", key=None):
     """rtauto_sop_android 앱으로 FCM data-only 메시지 발송 — send_test_alert.py와 동일 설계.
     notification 키를 넣지 않아야 앱이 백그라운드/종료 상태여도 AlertFcmService가 항상 호출된다.
-    send_push와 같은 정책: 실패해도 메인 루프는 계속 돈다(프로토타입이므로).
+
+    실패하면 최대 FCM_MAX_ATTEMPTS번까지 재시도한다(2026-09-21 추가) — "관리자가 확인할 때까지
+    30초마다 다시 보낸다"는 기획안 5.5절 스펙은 이미 앱의 로컬 반복 알람(TTS 10초 간격)이
+    사실상 채우고 있어서(사용자 질문으로 확인) 별도 스케줄러는 안 만들었다. 대신 진짜 구멍이던
+    "최초 발송 자체가 실패하면 그냥 포기"만 여기서 보강한다 — 발송이 폰에 아예 안 닿으면
+    로컬 반복 알람도 시작이 안 되기 때문. 그래도 최종 실패하면 메인 루프는 계속 돈다(프로토타입).
 
     kind="alert"(기본)면 새 경보로 표시+재생, kind="resolved"면 앱이 같은 key로 울리고
     있던 경보를 조용히 멈춘다(기획안 5.6절 — 해제는 사람 확인이 아니라 재감지로만)."""
     if not token:
         return
-    try:
-        access_token = _get_fcm_access_token()
-    except Exception as e:
-        print(f"[fcm] 인증 실패 ({FCM_SERVICE_ACCOUNT_FILE} 확인): {e}")
-        return
-    url = f"https://fcm.googleapis.com/v1/projects/{FCM_PROJECT_ID}/messages:send"
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json; UTF-8",
-    }
+
     data = {"title": title, "body": body, "level": level, "kind": kind}
     if key is not None:
         data["key"] = key
@@ -295,12 +325,21 @@ def send_fcm(token, title, body, level="중대", kind="alert", key=None):
             "android": {"priority": "high"},
         }
     }
-    try:
-        resp = requests.post(url, headers=headers, data=json.dumps(message), timeout=3)
-        if resp.status_code != 200:
-            print(f"[fcm] 발송 실패: {resp.status_code} {resp.text}")
-    except Exception as e:
-        print(f"[fcm] 발송 실패: {e}")
+    url = f"https://fcm.googleapis.com/v1/projects/{FCM_PROJECT_ID}/messages:send"
+
+    for attempt in range(1, FCM_MAX_ATTEMPTS + 1):
+        ok, retriable, note = _try_send_fcm_once(url, message)
+        if ok:
+            if attempt > 1:
+                print(f"[fcm] {attempt}번째 시도에서 발송 성공")
+            return
+        print(f"[fcm] 발송 실패({attempt}/{FCM_MAX_ATTEMPTS}번째): {note}")
+        if not retriable:
+            return
+        if attempt < FCM_MAX_ATTEMPTS:
+            time.sleep(FCM_RETRY_BACKOFF_SEC)
+
+    print(f"[fcm] {FCM_MAX_ATTEMPTS}번 다 실패 — 이 알림은 결국 발송 못함")
 
 
 def log_event(kind, rule, target, detail):
