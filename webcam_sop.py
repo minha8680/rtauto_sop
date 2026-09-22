@@ -169,7 +169,11 @@ DEFAULT_CLIP_SEC = 10.0            # 위반 확정 시점까지의 최근 N초�
 FCM_PROJECT_ID = "rtauto-sop"
 FCM_SERVICE_ACCOUNT_FILE = "service-account.json"
 FCM_SCOPES = ["https://www.googleapis.com/auth/firebase.messaging"]
-FCM_LEVEL_BY_RULE = {"crew": "중대", "zone": "중대", "helmet": "주의", "glasses": "주의"}   
+FCM_LEVEL_BY_RULE = {"crew": "중대", "zone": "중대", "helmet": "중대", "glasses": "중대"}
+# (2026-09-22) 헬멧·보안경도 본사 SOP 문서상 급소포인트로 확인돼 주의→중대로 격상.
+# level == "중대"일 때만 send_fcm이 나가므로(on_violation_confirmed 참고), 이제 4규칙 전부
+# 관리자 폰까지 발송된다 — 2026-09-21에 걸어둔 "주의는 폰 미발송" 게이트 자체는 그대로 두고
+# 등급표만 바꿈(기획안 5.5절 등급표 갱신 필요, 문서 쪽 후속 작업).
 
 
 def parse_args():
@@ -419,9 +423,11 @@ def on_violation_confirmed(args, throttle, frame_buffer, rule, target, title, de
       데는 더 이상 쓰지 않는다.
     - **단, 관리자 폰 FCM 푸시는 중대(Critical) 등급에만 보낸다**(기획안 5.5절 등급표 —
       "오경보는 작업 방해와 시스템 신뢰 저하를 유발하므로 관리자 푸시는 중대 편차에
-      한정한다"). 주의(Major, 헬멧·보안경)는 events.jsonl에는 그대로 남지만 폰까지는
+      한정한다"). 주의(Major) 등급이 하나라도 있으면 events.jsonl에는 남지만 폰까지는
       안 간다(2026-09-21 수정 — 그 전엔 등급 무관하게 전부 보내고 있었음, `FCM_LEVEL_BY_RULE`은
-      표시용일 뿐 발송 여부를 가르지 않았던 버그)."""
+      표시용일 뿐 발송 여부를 가르지 않았던 버그). **헬멧·보안경은 2026-09-22부로 이 주의
+      등급이 아니라 중대로 재분류돼**(본사 SOP 문서 기준 급소포인트) 4규칙 전부 이제
+      관리자 폰까지 발송된다 — `FCM_LEVEL_BY_RULE` 참고."""
     log_event("confirmed", rule, target, detail)
 
     # should_save_clip()은 내부 반복 횟수 카운터를 건드리는 부수효과가 있으므로 반드시 한
